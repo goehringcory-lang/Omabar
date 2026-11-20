@@ -34,10 +34,19 @@ fail() {
 }
 
 reload_shell() {
-  # Fresh plugin code first, then the config, so a bar the shell gave up on
-  # earlier gets another try.
-  omarchy-shell -q shell reloadPlugins >/dev/null 2>&1 || true
-  sleep 1
+  # Quickshell serves plugin QML from what it read when it started, so a
+  # rebuilt engine only takes effect after a full restart; reloading plugins
+  # in place keeps showing the old file.
+  if command -v omarchy-restart-shell >/dev/null && omarchy-restart-shell >/dev/null 2>&1; then
+    local _
+    for _ in $(seq 1 60); do
+      [[ $(omarchy-shell shell ping 2>/dev/null) == "ok" ]] && break
+      sleep 0.25
+    done
+  else
+    omarchy-shell -q shell reloadPlugins >/dev/null 2>&1 || true
+    sleep 1
+  fi
   omarchy-shell -q shell reloadConfig >/dev/null 2>&1 || true
 }
 
