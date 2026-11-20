@@ -47,15 +47,17 @@ Discover Weekly is a different playlist for every account, so the menu asks for 
 
 ### Google Calendar
 
-The clock's drop-down shows the month, colored dots for days with events, and the agenda for the day you pick. To fill it from your Google Calendar, open it and choose **Connect Google Calendar** (or run `~/.config/omarchy/plugins/goehringcory.omabar/bin/omabar-gcal login`). Like Spotify, Google needs a client of your own, once:
+The clock's drop-down shows the month, colored dots for days with events, and the agenda for the day you pick. To fill it, open it and choose **Connect Google Calendar** (or run `~/.config/omarchy/plugins/goehringcory.omabar/bin/omabar-gcal connect`). No Google Cloud setup is needed:
 
-1. In [Google Cloud Console](https://console.cloud.google.com/), make a project, enable the **Google Calendar API**, and set up the OAuth consent screen (External, add yourself as a test user).
-2. Under **Credentials**, create an **OAuth client ID** of type **Desktop app** and download its JSON.
-3. Run the login command and paste the path to that JSON (or the client ID and secret) when asked. A browser opens to sign in.
+1. Open [Google Calendar's settings](https://calendar.google.com/calendar/r/settings).
+2. On the left, click a calendar under **Settings for my calendars**, or under **Settings for other calendars** for one shared with you.
+3. Scroll to **Integrate calendar**, copy **Secret address in iCal format**, and paste it into the terminal. Repeat for each calendar, then press Enter on an empty line.
 
-Omabar only asks for read-only calendar access. The token is stored in `~/.config/omabar/`, readable only by you.
+Each calendar gets one of Google's calendar colors. Repeating events, time zones and moved or cancelled occurrences are handled. Clicking an event opens that day in Google Calendar. The addresses are stored in `~/.config/omabar/`, readable only by you. Treat them like passwords: anyone with one can read that calendar. If one leaks, reset it on the same settings page. A shared calendar shows a secret address only if its owner lets you see all event details; work accounts may have it turned off by the admin. `omabar-gcal disconnect` removes calendars.
 
-**Calendars** at the bottom of the drop-down lists every calendar you own and every calendar shared with you, each in its Google color. Tick the ones to show. Events keep the colors you set in Google.
+**Calendars** at the bottom of the drop-down lists them, split into yours and shared with you. Tick the ones to show; **Add calendar** adds more.
+
+Prefer the Google Calendar API (event colors set in Google, and every calendar at once)? Run `omabar-gcal login` instead. It needs an OAuth client of your own: in [Google Cloud Console](https://console.cloud.google.com/), enable the Google Calendar API, set up the OAuth consent screen (External, add yourself as a test user), create an OAuth client ID of type Desktop app, and paste the path to its downloaded JSON when asked. Both kinds of calendar can be used together.
 
 ### Thunderbird
 

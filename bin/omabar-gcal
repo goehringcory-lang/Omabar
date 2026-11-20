@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Omabar's Google Calendar helper.
 
+    omabar-gcal connect
+        The easy way: paste each calendar's "Secret address in iCal format"
+        from Google Calendar's settings. Works for shared calendars too.
+    omabar-gcal disconnect
+        Remove calendars added with connect.
     omabar-gcal login
-        Connect your Google account (read-only access to your calendars).
+        Alternative: connect through a Google OAuth client of your own.
     omabar-gcal calendars
         Print every calendar you own or that is shared with you, with its
         Google color and whether Omabar shows it, as JSON.
@@ -14,8 +19,7 @@
     omabar-gcal status
         Print whether an account is connected.
 
-You bring your own Google OAuth client (Desktop app), as Google requires for
-personal tools. Tokens live in ~/.config/omabar/, readable only by you.
+Calendar addresses and tokens live in ~/.config/omabar/, readable only by you.
 """
 import base64
 import datetime as dt
@@ -32,11 +36,19 @@ import urllib.parse
 import urllib.request
 import webbrowser
 
+sys.dont_write_bytecode = True  # keep the plugin checkout clean
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import omabar_ical as ical  # noqa: E402
+
 CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "omabar")
 CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "omabar")
 CLIENT_FILE = os.path.join(CONFIG_DIR, "google-client.json")
 TOKEN_FILE = os.path.join(CONFIG_DIR, "google-token.json")
 PREFS_FILE = os.path.join(CONFIG_DIR, "calendars.json")
+ICAL_FILE = os.path.join(CONFIG_DIR, "ical-calendars.json")
+# Google Calendar's own calendar colors, handed out in order to linked calendars.
+PALETTE = ["#039be5", "#33b679", "#8e24aa", "#e67c73", "#f6bf26", "#f4511e",
+           "#7986cb", "#0b8043", "#d50000", "#3f51b5", "#795548", "#616161"]
 CACHE_SECONDS = 300
 
 SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
@@ -84,6 +96,104 @@ def post_form(url, fields):
                                      headers={"Content-Type": "application/x-www-form-urlencoded"})
     with urllib.request.urlopen(request, timeout=10) as response:
         return json.load(response)
+
+
+# ── linked calendars (secret iCal addresses) ─────────────────────────────
+
+def linked():
+    data = read_json(ICAL_FILE, []) or []
+    return data if isinstance(data, list) else []
+
+
+def fetch_feed(url):
+    url = re.sub(r"^webcal://", "https://", url.strip(), flags=re.I)
+    request = urllib.request.Request(url, headers={"User-Agent": "omabar-gcal"})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        return response.read().decode("utf-8", "replace")
+
+
+def feed(calendar):
+    """The calendar's feed text, cached for a few minutes."""
+    name = f"gcal-ical-{calendar['id']}.json"
+    cached = read_cache(name, CACHE_SECONDS)
+    if cached is not None:
+        return cached
+    text = fetch_feed(calendar["url"])
+    write_cache(name, text)
+    return text
+
+
+def cmd_connect():
+    calendars = linked()
+    print("Add your Google calendars to Omabar. No Google Cloud setup needed.\n")
+    print("  1. Open Google Calendar's settings: https://calendar.google.com/calendar/r/settings")
+    print("  2. On the left, click a calendar under \"Settings for my calendars\"")
+    print("     or \"Settings for other calendars\" (your shared ones).")
+    print("  3. Scroll to \"Integrate calendar\" and copy \"Secret address in iCal format\".\n")
+    print("Paste one address per line. Press Enter on an empty line when you're done.")
+    if calendars:
+        print("Already added: " + ", ".join(c["name"] for c in calendars))
+    added = 0
+    while True:
+        try:
+            url = input("\nAddress: ").strip()
+        except EOFError:
+            break
+        if not url:
+            break
+        if not re.match(r"^(https?|webcal)://", url, re.I):
+            print("That isn't a calendar address. It starts with https://calendar.google.com/calendar/ical/")
+            continue
+        if any(c["url"] == url for c in calendars):
+            print("Already added.")
+            continue
+        try:
+            parsed = ical.read_calendar(fetch_feed(url))
+        except urllib.error.HTTPError as error:
+            print(f"Google refused that address ({error.code}). Copy the secret address again; it may have been reset.")
+            continue
+        except (urllib.error.URLError, OSError, ValueError) as error:
+            print(f"Couldn't read that address: {error}")
+            continue
+        name = parsed["name"] or f"Calendar {len(calendars) + 1}"
+        if "@" in name and len(calendars) == 0:
+            name = "My calendar"
+        shared = input(f"Found \"{name}\" ({len(parsed['events'])} events). Is it shared with you by someone else? [y/N] ").strip().lower().startswith("y")
+        calendars.append({
+            "id": "ical-" + hashlib.sha1(url.encode()).hexdigest()[:12],
+            "url": url,
+            "name": name,
+            "owned": not shared,
+            "color": PALETTE[len(calendars) % len(PALETTE)],
+        })
+        write_private(ICAL_FILE, calendars)
+        added += 1
+        print(f"Added {name}.")
+    clear_cache()
+    if calendars:
+        print(f"\nDone. {len(calendars)} calendar{'s' if len(calendars) != 1 else ''} linked. Open the clock's calendar to see them.")
+        return 0
+    print("\nNo calendars added.")
+    return 1
+
+
+def cmd_disconnect():
+    calendars = linked()
+    if not calendars:
+        print("No linked calendars.")
+        return 0
+    for i, c in enumerate(calendars, 1):
+        print(f"  {i}. {c['name']}")
+    answer = input("Remove which? (numbers separated by spaces, or 'all'): ").strip().lower()
+    if answer == "all":
+        keep = []
+    else:
+        drop = {int(t) for t in answer.split() if t.isdigit()}
+        keep = [c for i, c in enumerate(calendars, 1) if i not in drop]
+    write_private(ICAL_FILE, keep)
+    clear_cache()
+    print(f"{len(calendars) - len(keep)} removed.")
+    return 0
 
 
 # ── auth ──────────────────────────────────────────────────────────────────
@@ -265,12 +375,28 @@ def shown(calendar, chosen):
     return calendar["googleSelected"] or calendar["primary"]
 
 
+def all_calendars():
+    """Google API calendars (when signed in) and linked iCal calendars."""
+    calendars = []
+    if access_token():
+        calendars += fetch_calendars()
+    for c in linked():
+        calendars.append({"id": c["id"], "name": c["name"], "color": c.get("color", PALETTE[0]),
+                          "owned": c.get("owned", True), "primary": False, "googleSelected": True,
+                          "ical": True})
+    return calendars
+
+
+def is_connected():
+    return bool(linked()) or bool(read_json(TOKEN_FILE) and client()[0])
+
+
 def cmd_calendars():
-    if not access_token():
+    if not is_connected():
         print(json.dumps({"connected": False, "calendars": []}))
         return 0
     chosen = prefs().get("shown", {})
-    calendars = fetch_calendars()
+    calendars = all_calendars()
     for calendar in calendars:
         calendar["shown"] = shown(calendar, chosen)
     print(json.dumps({"connected": True, "calendars": calendars}))
@@ -280,7 +406,7 @@ def cmd_calendars():
 def cmd_toggle(calendar_id):
     data = prefs()
     chosen = data.setdefault("shown", {})
-    calendars = fetch_calendars() if access_token() else []
+    calendars = all_calendars()
     match = next((c for c in calendars if c["id"] == calendar_id), None)
     current = shown(match, chosen) if match else chosen.get(calendar_id, False)
     chosen[calendar_id] = not current
@@ -304,7 +430,7 @@ def event_colors():
 
 
 def cmd_events(month=None):
-    if not access_token():
+    if not is_connected():
         print(json.dumps({"connected": False, "events": []}))
         return 0
     local = dt.datetime.now().astimezone()
@@ -325,9 +451,30 @@ def cmd_events(month=None):
         return 0
 
     chosen = prefs().get("shown", {})
-    palette = event_colors()
-    events = []
-    for calendar in fetch_calendars():
+    events, problems = [], []
+    signed_in = bool(access_token())
+    palette = event_colors() if signed_in else {}
+    for calendar in linked():
+        if not shown({"id": calendar["id"], "googleSelected": True, "primary": False}, chosen):
+            continue
+        try:
+            parsed = ical.read_calendar(feed(calendar))
+        except (urllib.error.URLError, OSError, ValueError) as error:
+            problems.append(f"{calendar['name']}: {error}")
+            continue
+        for item in ical.expand_events(parsed, start, end, local.tzinfo):
+            day = item["start"].value
+            events.append({
+                "title": item["title"],
+                "start": ical.iso(item["start"], local.tzinfo),
+                "end": ical.iso(item["end"], local.tzinfo),
+                "allDay": item["start"].all_day,
+                "location": item["location"],
+                "calendar": calendar["name"],
+                "color": calendar.get("color", PALETTE[0]),
+                "link": f"https://calendar.google.com/calendar/r/day/{day.year}/{day.month}/{day.day}",
+            })
+    for calendar in (fetch_calendars() if signed_in else []):
         if not shown(calendar, chosen):
             continue
         try:
@@ -352,13 +499,21 @@ def cmd_events(month=None):
                 "link": item.get("htmlLink", ""),
             })
     events.sort(key=lambda e: (e["start"] or "", not e["allDay"]))
+    if problems:
+        print(json.dumps({"connected": True, "events": events, "error": "; ".join(problems)}))
+        return 0
     write_cache(key, events)
     print(json.dumps({"connected": True, "events": events}))
     return 0
 
 
 def cmd_status():
-    print("connected" if read_json(TOKEN_FILE) and client()[0] else "not connected")
+    parts = []
+    if read_json(TOKEN_FILE) and client()[0]:
+        parts.append("Google account")
+    if linked():
+        parts.append(f"{len(linked())} linked calendar{'s' if len(linked()) != 1 else ''}")
+    print("connected: " + ", ".join(parts) if parts else "not connected")
     return 0
 
 
@@ -373,6 +528,10 @@ def main(argv):
         except (urllib.error.URLError, OSError, ValueError) as error:
             print(f"Sign-in failed: {error}")
             return 1
+    if command == "connect":
+        return cmd_connect()
+    if command == "disconnect":
+        return cmd_disconnect()
     try:
         if command == "calendars":
             return cmd_calendars()

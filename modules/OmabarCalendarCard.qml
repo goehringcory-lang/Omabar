@@ -426,6 +426,14 @@ Item {
         onPicked: card.pickingCalendars = !card.pickingCalendars
       }
 
+      Chip {
+        visible: card.connected && card.pickingCalendars
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        label: "\u{F0415}  Add calendar"
+        onPicked: card.connectRequested()
+      }
+
       Rectangle {
         visible: !card.connected && !card.loading
         anchors.fill: parent
