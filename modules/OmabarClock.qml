@@ -96,10 +96,13 @@ Item {
   }
 
   property bool calendarOpen: false
+  // Called by the bar when another popup opens or a click lands outside.
+  function close() { calendarOpen = false }
 
   OmabarCalendar {
     anchorItem: board
     bar: root.bar
+    owner: root
     open: root.calendarOpen
     onDismissed: root.calendarOpen = false
   }

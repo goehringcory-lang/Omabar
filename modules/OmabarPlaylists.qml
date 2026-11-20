@@ -7,6 +7,7 @@ import Quickshell.Hyprland
 import Quickshell.Io
 import qs.Commons
 import qs.Commons as Commons
+import qs.Ui
 
 Item {
   id: menu
@@ -17,7 +18,7 @@ Item {
   signal dismissed()
 
   readonly property var bar: player ? player.bar : null
-  readonly property color ink: player ? player.ink : Commons.Color.foreground
+  readonly property color ink: Commons.Color.popups.text
   readonly property string fontName: player ? player.fontName : "monospace"
   readonly property bool bottomBar: bar && bar.position === "bottom"
 
@@ -65,66 +66,20 @@ Item {
     onExited: menu.loading = false
   }
 
-  PopupWindow {
+  // Omarchy's own popup card: placed under the bar, themed like its other
+  // panels, closed by a click outside, and one popup open at a time.
+  PopupCard {
     id: popup
-    visible: menu.open && menu.anchorItem !== null
-    color: "transparent"
-    anchor.item: menu.anchorItem
-    anchor.rect.x: menu.anchorItem ? menu.anchorItem.width / 2 : 0
-    anchor.rect.y: menu.bottomBar ? -Style.space(10) : (menu.anchorItem ? menu.anchorItem.height + Style.space(10) : 0)
-    anchor.rect.width: 1
-    anchor.rect.height: 1
-    anchor.edges: Edges.Top
-    anchor.gravity: menu.bottomBar ? Edges.Top : Edges.Bottom
-    implicitWidth: card.width + shadowRoom * 2
-    implicitHeight: card.height + shadowRoom * 2
-
-    readonly property int shadowRoom: Style.space(18)
-
-    HyprlandFocusGrab {
-      windows: [popup]
-      active: popup.visible
-      onCleared: menu.dismissed()
-    }
-
-    RectangularShadow {
-      anchors.fill: card
-      radius: card.radius
-      offset.y: Style.space(6)
-      blur: Style.space(18)
-      color: Qt.rgba(0, 0, 0, 0.35)
-    }
-
-    Rectangle {
-      id: card
-      x: popup.shadowRoom
-      y: popup.shadowRoom
-      width: Style.space(300)
-      height: column.implicitHeight + Style.space(16) * 2
-      radius: Style.space(18)
-      color: Qt.rgba(Commons.Color.background.r, Commons.Color.background.g, Commons.Color.background.b, 0.92)
-      border.width: 1
-      border.color: Qt.rgba(menu.ink.r, menu.ink.g, menu.ink.b, 0.10)
-
-      // Entrance: a short drop and fade.
-      opacity: popup.visible ? 1 : 0
-      transform: Translate { y: popup.visible ? 0 : (menu.bottomBar ? 6 : -6) }
-      Behavior on opacity { NumberAnimation { duration: Style.duration(160) } }
-
-      Rectangle {
-        anchors.fill: parent
-        radius: parent.radius
-        gradient: Gradient {
-          GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0.06) }
-          GradientStop { position: 0.3; color: Qt.rgba(1, 1, 1, 0.0) }
-        }
-      }
+    anchorItem: menu.anchorItem
+    bar: menu.bar
+    owner: menu.player
+    open: menu.open
+    contentWidth: popup.fittedContentWidth(Style.space(300))
+    contentHeight: popup.fittedContentHeight(column.implicitHeight)
 
       Column {
         id: column
-        x: Style.space(16)
-        y: Style.space(16)
-        width: card.width - Style.space(32)
+        anchors.fill: parent
         spacing: Style.space(10)
 
         // ── one-click picks ───────────────────────────────────────────
@@ -199,7 +154,6 @@ Item {
           onPicked: menu.runInTerminal([menu.player.helper, "login"])
         }
       }
-    }
   }
 
   // ── pieces ───────────────────────────────────────────────────────────
