@@ -1,11 +1,17 @@
 // Omabar player: a small Spotify player for the middle of the bar.
 // Controls, round album art that turns slowly while music plays, the track,
-// and a hairline of progress. It hides itself when Spotify isn't running.
+// and a hairline of progress. The chevron opens a playlist menu with one-click
+// Lofi Beats and Discover Weekly. With Spotify closed it rests as a small
+// disc and chevron, so a playlist is still one click away.
 //
 // Settings (inline on the shell.json entry):
-//   player     - which MPRIS player to follow (default "spotify")
-//   anyPlayer  - fall back to whatever is playing when that one isn't open (default false)
-//   maxWidth   - widest the track text may grow, in px (default 220)
+//   player         - which MPRIS player to follow (default "spotify")
+//   anyPlayer      - fall back to whatever is playing when that one isn't open (default false)
+//   maxWidth       - widest the track text may grow, in px (default 220)
+//   lofi           - link or URI behind the Lofi Beats button (default: Spotify's "lofi beats")
+//   discoverWeekly - your Discover Weekly link (it's different for every account)
+//   playlists      - extra pinned playlists: [{ "name": "…", "uri": "…" }]
+//   showIdle       - keep the small disc and chevron while Spotify is closed (default true)
 import QtQuick
 import QtQuick.Effects
 import Quickshell
@@ -28,6 +34,8 @@ Item {
   readonly property string wanted: String(setting("player", "spotify")).toLowerCase()
   readonly property bool anyPlayer: setting("anyPlayer", false) === true
   readonly property int maxTextWidth: Number(setting("maxWidth", 220))
+  readonly property bool showIdle: setting("showIdle", true) !== false
+  readonly property string helper: String(Qt.resolvedUrl("../bin/omabar-spotify")).replace(/^file:\/\//, "")
 
   readonly property bool vertical: bar ? bar.vertical : false
   readonly property int barSize: bar ? bar.barSize : 34
@@ -77,9 +85,25 @@ Item {
     if (bar) bar.run(root.wanted === "spotify" ? "omarchy-launch-spotify" : "omarchy-launch-or-focus " + Util.shellQuote(root.wanted))
   }
 
-  visible: active
-  implicitWidth: !active ? 0 : (vertical ? barSize : content.implicitWidth + Style.space(6))
-  implicitHeight: !active ? 0 : (vertical ? content.implicitHeight + Style.space(6) : barSize)
+  // Shown while something plays, or resting as disc + chevron when idle.
+  readonly property bool shown: active || (showIdle && !vertical)
+  property bool menuOpen: false
+
+  function play(uri) {
+    if (bar && uri) bar.run(Util.shellQuote(root.helper) + " play " + Util.shellQuote(uri))
+    root.menuOpen = false
+  }
+
+  visible: shown
+  implicitWidth: !shown ? 0 : (vertical ? barSize : content.implicitWidth + Style.space(6))
+  implicitHeight: !shown ? 0 : (vertical ? content.implicitHeight + Style.space(6) : barSize)
+
+  OmabarPlaylists {
+    anchorItem: chevron
+    player: root
+    open: root.menuOpen
+    onDismissed: root.menuOpen = false
+  }
 
   // ── pieces ─────────────────────────────────────────────────────────────
   component Glyph: Item {
@@ -179,7 +203,12 @@ Item {
     }
 
     HoverHandler { cursorShape: Qt.PointingHandCursor }
-    TapHandler { onTapped: if (root.player && root.player.canTogglePlaying) root.player.togglePlaying() }
+    TapHandler {
+      onTapped: {
+        if (root.player && root.player.canTogglePlaying) root.player.togglePlaying()
+        else root.menuOpen = !root.menuOpen
+      }
+    }
   }
 
   // ── layout ─────────────────────────────────────────────────────────────
@@ -197,22 +226,25 @@ Item {
 
       Glyph {
         icon: "\u{F04AE}"
+        visible: root.active
         enabledAction: !!root.player && root.player.canGoPrevious
         onClicked: root.player.previous()
       }
       Glyph {
         icon: root.playing ? "\u{F03E4}" : "\u{F040A}"
         size: Style.font.iconLarge
+        visible: root.active
         enabledAction: !!root.player && root.player.canTogglePlaying
         onClicked: root.player.togglePlaying()
       }
       Glyph {
         icon: "\u{F04AD}"
+        visible: root.active
         enabledAction: !!root.player && root.player.canGoNext
         onClicked: root.player.next()
       }
 
-      Item { width: Style.space(4); height: 1 }
+      Item { width: Style.space(4); height: 1; visible: root.active }
 
       Disc { anchors.verticalCenter: parent.verticalCenter }
 
@@ -221,6 +253,7 @@ Item {
       // Track and a hairline of progress beneath it.
       Item {
         id: track
+        visible: root.active
         anchors.verticalCenter: parent.verticalCenter
         implicitWidth: Math.min(root.maxTextWidth, label.implicitWidth)
         implicitHeight: root.barSize
@@ -269,12 +302,24 @@ Item {
         }
       }
 
-      Item { width: Style.space(4); height: 1 }
+      // Resting state: Spotify is closed.
+      Text {
+        visible: !root.active
+        anchors.verticalCenter: parent.verticalCenter
+        text: "Spotify"
+        color: root.ink
+        opacity: 0.6
+        font.family: root.fontName
+        font.pixelSize: Style.font.bodySmall
+      }
+
+      Item { width: Style.space(2); height: 1 }
 
       Glyph {
-        icon: "\u{F02CB}"
+        id: chevron
+        icon: root.menuOpen ? "\u{F0143}" : "\u{F0140}"
         size: Style.font.iconSmall
-        onClicked: root.openApp()
+        onClicked: root.menuOpen = !root.menuOpen
       }
     }
 

@@ -2,11 +2,17 @@
 
 A floating glass bar for [Omarchy](https://omarchy.org) 4. It sits over your desktop as a flattened glass oval, follows whichever Omarchy theme you switch to, and keeps everything that already works on the Omarchy bar: panels, drag and drop, `omarchy bar` commands, and plugins.
 
-**Left:** the Omarchy menu and workspace dots. The workspace you're on stretches into an accent-colored pill.
+**Left:** the Omarchy logo on a bright tile in your theme's accent color, then workspace dots. The workspace you're on stretches into an accent pill, and switching sends a drop of water across that sheds droplets and splashes into the new one.
 
-**Center:** status indicators, a small Spotify player (previous, play/pause, next, round album art that turns while music plays, the track, and a progress line), and the clock. [Omaplug](https://github.com/fross100/omaplug) sits beside the clock when installed, so you can add and remove plugins from the bar.
+![Workspace switch](preview/workspaces-drop.gif)
 
-**Right:** AI usage (Omarchy's agents panel, plus [ai-usagebar](https://github.com/akitaonrails/ai-usagebar) when installed), notifications, Omarchy settings, [Omaland](https://github.com/bobby-nicholas/omaland) when installed, and battery. Bluetooth, Wi-Fi, audio and display stay folded into a drawer that slides open when you hover it.
+**Center:** status indicators, a small Spotify player (previous, play/pause, next, round album art that turns while music plays, the track, and a progress line), and a split-flap clock in the accent color whose digits flip like an old departures board. Click the clock to flip it to the date. [Omaplug](https://github.com/fross100/omaplug) sits beside the clock when installed, so you can add and remove plugins from the bar.
+
+![Split-flap clock](preview/split-flap-clock.gif)
+
+The player's chevron opens a playlist menu: one-click **Lofi Beats**, **Discover Weekly**, any playlists you pin, and every playlist on your Spotify account once you connect it. With Spotify closed the player rests as a small disc and chevron, so a playlist is still one click away.
+
+**Right:** AI usage (Omarchy's agents panel, plus [ai-usagebar](https://github.com/akitaonrails/ai-usagebar) when installed), notifications, Thunderbird mail (it turns the accent color when new mail arrives in any inbox), Omarchy settings, [Omaland](https://github.com/bobby-nicholas/omaland) when installed, and battery. Bluetooth, Wi-Fi, audio and display stay folded into a drawer that slides open when you hover it.
 
 ## Install
 
@@ -23,7 +29,15 @@ omarchy plugin add https://github.com/goehringcory-lang/Omabar.git
 
 `omabar-setup` backs up `~/.config/omarchy/shell.json` the first time it runs, switches the shell to Omabar, lays out the widgets above, and sets the bar to glassy so Hyprland blurs what's behind it. Widgets from other plugins that you already had on the bar stay where they were. Run it again after installing a companion plugin to add it to the bar.
 
-The Spotify player needs Spotify running (desktop app or web app); it hides itself otherwise.
+### Spotify playlists
+
+Lofi Beats and your pinned playlists work right away. To list every playlist on your account, open the player's menu and choose **Connect Spotify** (or run `~/.config/omarchy/plugins/goehringcory.omabar/bin/omabar-spotify login`). It walks you through making a free Spotify developer app, since Spotify requires one per user, and stores the login token in `~/.config/omabar/`, readable only by you.
+
+Discover Weekly is a different playlist for every account, so the menu asks for your link the first time you click it.
+
+### Thunderbird
+
+The mail button notices new mail from Thunderbird's own new-mail notifications, so leave Thunderbird running (it can sit in the background) with new-mail alerts on, which is its default. Clicking opens Thunderbird and clears the accent; so does switching to its window. Right-click marks it seen.
 
 ## Undo
 
@@ -37,7 +51,8 @@ omarchy bar reset                                                          # or 
 Everything is normal Omarchy bar configuration, so you can drag widgets around, move things in and out of the hover drawer, and use `omarchy bar move`, `omarchy bar set`, `omarchy plugin add`, and `omarchy plugin remove` as usual.
 
 - **Look:** double-click empty bar space, or run `omarchy bar background opaque|glassy|none`, to switch between solid glass, frosted glass, and clear.
-- **Player:** `omarchy bar set omabar-player player <name>` follows a different MPRIS player, `anyPlayer true` falls back to whatever is playing, and `maxWidth 260` gives the track more room.
+- **Player:** `omarchy bar set omabar-player player <name>` follows a different MPRIS player, `anyPlayer true` falls back to whatever is playing, `maxWidth 260` gives the track more room, `lofi <link>` points the Lofi button at another playlist, and `showIdle false` hides the player while Spotify is closed. Pin playlists with `omarchy bar set omabar-player playlists '[{"name":"Focus","uri":"spotify:playlist:…"}]' --json`.
+- **Clock:** `omarchy bar set omabar-clock twelveHour true` for 12-hour time, `showDate false` for just the tiles.
 - **Workspace dots:** `omarchy bar set omabar-workspaces persistent 7` changes how many dots always show.
 - **Size:** the bar height follows `[bar] size-horizontal` in `~/.config/omarchy/shell.toml`, with a 34px floor.
 
@@ -54,7 +69,9 @@ python3 tools/omabar-patch.py "$OMARCHY_PATH/shell/plugins/bar" .
 
 The script refuses to write anything if an edit no longer matches, so an update can't leave you with a half-patched bar.
 
-The workspace dots and the player are custom bar modules in `modules/`. The notification button is a command module backed by `bin/omabar-notifications`.
+The menu tile, workspace dots, player, playlist menu, clock and mail button are custom bar modules in `modules/`. The notification button is a command module backed by `bin/omabar-notifications`, and `bin/omabar-spotify` plays playlists through Spotify's MPRIS interface and lists them through the Spotify Web API.
+
+`preview/` holds recordings of the workspace and clock animations, rendered from the real module code with stand-ins for the Omarchy shell.
 
 ## Credits
 
