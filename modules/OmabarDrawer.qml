@@ -37,9 +37,19 @@ Item {
 
   readonly property color ink: Commons.Color.popups.text
   readonly property string fontName: bar && bar.fontFamily ? bar.fontFamily : Style.font.family
+  // The drawer's widgets, each one once however often the layout names it.
   readonly property var trayEntries: {
     var layout = bar && bar.layoutConfig ? bar.layoutConfig : null
-    return layout && Array.isArray(layout.tray) ? layout.tray : []
+    var listed = layout && Array.isArray(layout.tray) ? layout.tray : []
+    var seen = ({})
+    var result = []
+    for (var i = 0; i < listed.length; i++) {
+      var id = entryId(listed[i])
+      if (!id || seen[id]) continue
+      seen[id] = true
+      result.push(listed[i])
+    }
+    return result
   }
 
   // ── open / close ────────────────────────────────────────────────────
@@ -49,19 +59,27 @@ Item {
   readonly property bool open: pinned || hoverOpen
 
   function close() {
+    closeTimer.stop()
     pinned = false
     hoverOpen = false
     editing = false
+    hoveredApp = ""
     closeMenu()
+  }
+
+  // Editing, or reading an app's menu, shouldn't end because the pointer
+  // strayed: the panel then stays until a click elsewhere, like a clicked one.
+  function hold() {
+    pinned = true
+    hoverOpen = true
   }
 
   Timer {
     id: closeTimer
     interval: 320
     onTriggered: {
-      if (root.pinned || handleHover.hovered || popup.containsMouse || root.menuItem) return
+      if (root.pinned || handleHover.hovered || popup.containsMouse) return
       root.hoverOpen = false
-      root.editing = false
     }
   }
 
@@ -69,17 +87,22 @@ Item {
   property var hiddenIds: []
   readonly property string hiddenFile: (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config") + "/omabar/drawer-hidden.json"
 
+  // Watched, so the drawer on every monitor hides the same tiles.
   FileView {
     id: hiddenStore
     path: root.hiddenFile
     printErrors: false
+    watchChanges: true
+    onFileChanged: reload()
     onLoaded: {
+      var list
       try {
-        var list = JSON.parse(text())
-        root.hiddenIds = Array.isArray(list) ? list : []
+        list = JSON.parse(text())
       } catch (e) {
-        root.hiddenIds = []
+        return
       }
+      if (!Array.isArray(list)) list = []
+      if (JSON.stringify(list) !== JSON.stringify(root.hiddenIds)) root.hiddenIds = list
     }
   }
 
@@ -91,8 +114,9 @@ Item {
     if (at === -1) next.push(key)
     else next.splice(at, 1)
     hiddenIds = next
-    // Written by a shell so the folder is made first on a fresh install.
-    Quickshell.execDetached(["sh", "-c", 'mkdir -p "$(dirname "$1")" && printf "%s" "$2" > "$1"', "sh", hiddenFile, JSON.stringify(next)])
+    // Written by a shell so the folder is made first on a fresh install, and
+    // moved into place so a reader never finds half a list.
+    Quickshell.execDetached(["sh", "-c", 'mkdir -p "$(dirname "$1")" && printf "%s" "$2" > "$1.tmp" && mv -f "$1.tmp" "$1"', "sh", hiddenFile, JSON.stringify(next)])
   }
 
   // ── widget tiles ────────────────────────────────────────────────────
@@ -115,39 +139,78 @@ Item {
     return name.replace(/\b\w/g, function(c) { return c.toUpperCase() })
   }
 
+  function isGlyph(value) {
+    var text = String(value || "")
+    if (!text) return false
+    var code = text.codePointAt(0)
+    if (text.length !== (code > 0xffff ? 2 : 1)) return false
+    return (code >= 0xe000 && code <= 0xf8ff) || code >= 0xf0000
+  }
+
+  // The widget's own icon as it stands on the bar (Bluetooth off, sound
+  // muted, a plugin's mark), so a tile shows what the widget would.
   function tileIcon(entry) {
     var id = entryId(entry)
-    if (known[id]) return known[id].icon
-    if (entry && entry.text) return String(entry.text)
-    return "\u{F0431}"
+    if (entry && isGlyph(entry.text)) return String(entry.text)
+    var button = pressTarget(liveItem(id))
+    if (button && isGlyph(button.text)) return String(button.text)
+    return known[id] ? known[id].icon : "\u{F0431}"
+  }
+
+  // What a plugin calls its widget ("Notification Center"), as the bar's
+  // widget list has it.
+  function displayName(id) {
+    var registry = bar && bar.barWidgetRegistry ? bar.barWidgetRegistry : null
+    var metadata = registry && typeof registry.metadataFor === "function" ? registry.metadataFor(id) : null
+    return metadata && metadata.displayName ? String(metadata.displayName) : ""
   }
 
   function tileLabel(entry) {
     var id = entryId(entry)
     if (known[id]) return known[id].label
     if (entry && entry.tooltip) return String(entry.tooltip).split(":")[0]
-    return prettyName(id)
-  }
-
-  // The live widget the bar made for a drawer entry, if any.
-  function liveItem(id) {
-    var slots = bar && bar.moduleSlots ? bar.moduleSlots : []
-    for (var i = 0; i < slots.length; i++) {
-      var slot = slots[i]
-      if (slot && slot.region === "tray" && slot.moduleName === id && slot.activeItem) return slot.activeItem
-    }
-    return null
-  }
-
-  // A widget that hides itself (one keyboard layout, no microphone) gets no tile.
-  function tileAvailable(entry) {
-    var item = liveItem(entryId(entry))
-    return !item || item.visible !== false
+    return displayName(id) || prettyName(id)
   }
 
   function within(item, ancestor) {
     for (var p = item; p; p = p.parent) if (p === ancestor) return true
     return false
+  }
+
+  // The live widget the bar made for a drawer entry, if any. Every monitor's
+  // bar has its own; the one held by this drawer is the one whose panel
+  // opens on this screen.
+  function liveItem(id) {
+    var slots = bar && bar.moduleSlots ? bar.moduleSlots : []
+    var elsewhere = null
+    for (var i = 0; i < slots.length; i++) {
+      var slot = slots[i]
+      if (!slot || slot.region !== "tray" || slot.moduleName !== id || !slot.activeItem) continue
+      if (within(slot, hostArea)) return slot.activeItem
+      if (!elsewhere) elsewhere = slot.activeItem
+    }
+    return elsewhere
+  }
+
+  // The button inside a widget that a click on the bar would press.
+  function pressTarget(item) {
+    if (!item) return null
+    var targets = bar && bar.clickTargets ? bar.clickTargets : []
+    for (var i = 0; i < targets.length; i++) {
+      var target = targets[i]
+      if (target && typeof target.triggerPress === "function" && within(target, item)) return target
+    }
+    return typeof item.triggerPress === "function" ? item : null
+  }
+
+  // A tile needs something to open. A widget that hides itself (one keyboard
+  // layout, no Bluetooth adapter) gets none, nor does one that never loaded,
+  // such as a plugin that has been turned off or removed.
+  function tileAvailable(entry) {
+    if (entry && entry.onClick) return true
+    var item = liveItem(entryId(entry))
+    if (!item || item.visible === false) return false
+    return typeof item.open === "function" || !!pressTarget(item)
   }
 
   function activate(entry) {
@@ -165,15 +228,10 @@ Item {
       return
     }
     // Otherwise press the widget the way a click on the bar would.
-    var targets = bar && bar.clickTargets ? bar.clickTargets : []
-    for (var i = 0; i < targets.length; i++) {
-      var target = targets[i]
-      if (target && typeof target.triggerPress === "function" && within(target, item)) {
-        close()
-        target.triggerPress(Qt.LeftButton)
-        return
-      }
-    }
+    var target = pressTarget(item)
+    if (!target) return
+    close()
+    target.triggerPress(Qt.LeftButton)
   }
 
   // ── tray apps ───────────────────────────────────────────────────────
@@ -188,6 +246,13 @@ Item {
   }
 
   property string hoveredApp: ""
+  // How many app icons the panel shows: all of them while editing.
+  readonly property int shownApps: {
+    if (editing) return trayApps.length
+    var n = 0
+    for (var i = 0; i < trayApps.length; i++) if (!isHidden(appKey(trayApps[i]))) n++
+    return n
+  }
 
   function appKey(app) { return "app:" + String(app.id || app.title || "") }
 
@@ -203,7 +268,9 @@ Item {
 
   function openMenu(app) {
     closeMenu()
-    if (app && app.hasMenu !== false && app.menu) root.menuItem = app
+    if (!app || app.hasMenu === false || !app.menu) return
+    root.menuItem = app
+    hold()
   }
 
   function closeMenu() {
@@ -331,7 +398,18 @@ Item {
           opacity: editHover.hovered || root.editing ? 1 : 0.55
           font.family: root.fontName
           font.pixelSize: Style.font.caption
-          MouseArea { id: editHover; anchors.fill: parent; anchors.margins: -Style.space(6); hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.editing = !root.editing; readonly property bool hovered: containsMouse }
+          MouseArea {
+            id: editHover
+            anchors.fill: parent
+            anchors.margins: -Style.space(6)
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            readonly property bool hovered: containsMouse
+            onClicked: {
+              root.editing = !root.editing
+              if (root.editing) root.hold()
+            }
+          }
         }
       }
 
@@ -359,7 +437,7 @@ Item {
         text: root.hoveredApp ? "Apps · " + root.hoveredApp : "Apps"
         width: parent.width
         elide: Text.ElideRight
-        visible: appFlow.visibleCount > 0
+        visible: root.shownApps > 0
         topPadding: Style.space(2)
       }
 
@@ -367,25 +445,14 @@ Item {
         id: appFlow
         width: parent.width
         spacing: Style.space(6)
-        property int visibleCount: 0
-        function recount() {
-          var n = 0
-          for (var i = 0; i < appRepeater.count; i++) {
-            var it = appRepeater.itemAt(i)
-            if (it && it.visible) n++
-          }
-          visibleCount = n
-        }
+        visible: root.shownApps > 0
         Repeater {
-          id: appRepeater
           model: root.trayApps
-          onCountChanged: appFlow.recount()
           AppIcon {
             required property var modelData
             app: modelData
             visible: root.editing || !root.isHidden(root.appKey(modelData))
             dimmed: root.isHidden(root.appKey(modelData))
-            onVisibleChanged: appFlow.recount()
           }
         }
       }

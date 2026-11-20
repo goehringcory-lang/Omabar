@@ -118,7 +118,7 @@ command -v jq >/dev/null || fail "jq is required"
 
 [[ -f $DEFAULTS_FILE ]] || fail "Omarchy's shell isn't at $OMARCHY_PATH (no config/omarchy/shell.json there); Omabar needs Omarchy 4"
 
-mkdir -p "$(dirname "$CONFIG_FILE")" "${XDG_CACHE_HOME:-$HOME/.cache}/omabar"
+mkdir -p "$(dirname "$CONFIG_FILE")" "${XDG_CACHE_HOME:-$HOME/.cache}/omabar" "${XDG_CONFIG_HOME:-$HOME/.config}/omabar"
 build_engine
 if [[ -s $CONFIG_FILE ]]; then
   source_file="$CONFIG_FILE"
@@ -139,7 +139,7 @@ installed_plugins() {
   for manifest in "$PLUGINS_DIR"/*/manifest.json; do
     [[ -f $manifest ]] || continue
     jq -c '{ id: (.id // ""), kinds: (.kinds // []), clonedFrom: (.omarchy.clonedFrom? // "") }' "$manifest" 2>/dev/null || true
-  done | jq -sc --arg self "$PLUGIN_ID" 'map(select(.id != "" and .id != $self))'
+  done | jq -sc --arg self "$PLUGIN_ID" 'map(select(.id != "" and .id != $self)) | unique_by(.id)'
 }
 plugins_json=$(installed_plugins)
 has_plugin() { jq -e --arg re "$1" 'any(.[]; .id | test($re; "i"))' <<<"$plugins_json" >/dev/null; }
@@ -175,7 +175,13 @@ jq -S \
   | ($plugins | map(select((.id | test("omaland"; "i")) and (.kinds | index("bar-widget") | not)) | .id) | first // "") as $omalandPanel
   |
   . as $old
-  | .version = 1
+  # A widget keeps the settings it had (an AI usage provider, the world
+  # clock cities) when setup runs again, wherever it sat in the old layout.
+  | ([ ($old.bar.layout? // {}) | objects | .[] | arrays | .[] | objects
+       | select((.id | type) == "string" and (has("type") | not)) ]
+     | map({ key: .id, value: . }) | from_entries) as $kept
+  | def widget: . as $id | ($kept[$id] // { id: $id });
+  .version = 1
   | .bar = (.bar | obj)
   | .bar.id = $bar
   | .bar.background = "glassy"
@@ -185,16 +191,16 @@ jq -S \
         { id: "omabar-workspaces", type: "qml", source: ($dir + "/modules/OmabarWorkspaces.qml"), persistent: 5 }
       ],
       centerBegin: [
-        { id: "omarchy.indicators" }
+        ("omarchy.indicators" | widget)
       ],
       center: [
         { id: "omabar-player", type: "qml", source: ($dir + "/modules/OmabarPlayer.qml"), player: "spotify", maxWidth: 220 },
         { id: "omabar-clock", type: "qml", source: ($dir + "/modules/OmabarClock.qml") }
       ],
       centerEnd: (
-        [ { id: $elsewhen } ]
-        + ($omaplug | map({ id: . }))
-        + [ { id: "omarchy.system-update" } ]
+        [ $elsewhen | widget ]
+        + ($omaplug | map(widget))
+        + [ "omarchy.system-update" | widget ]
       ),
       # Always in view: AI usage, notifications, mail, settings, battery. The rest
       # waits in the hover drawer (tray).
@@ -203,33 +209,28 @@ jq -S \
         # added later land to its right. It opens a panel below the bar
         # rather than widening the bar, so the clock is never covered.
         [ { id: "omabar-drawer", type: "qml", source: ($dir + "/modules/OmabarDrawer.qml") },
-          { id: "omarchy.agents" } ]
-        + ($usage | map({ id: . }))
+          ("omarchy.agents" | widget) ]
+        + ($usage | map(widget))
         + [
-            { id: "omabar-notifications", type: "command",
-              exec: ($dir + "/bin/omabar-notifications status"), interval: 5,
-              onClick: ($dir + "/bin/omabar-notifications history"),
-              onRightClick: ($dir + "/bin/omabar-notifications dnd") },
+            { id: "omabar-notifications", type: "qml", source: ($dir + "/modules/OmabarNotifications.qml") },
             { id: "omabar-mail", type: "qml", source: ($dir + "/modules/OmabarMail.qml"), app: "thunderbird" },
             { id: "omabar-settings", type: "command", text: "󰒓",
               tooltip: "Omarchy settings", onClick: "omarchy-menu toggle setup" },
-            { id: "omarchy.power" }
+            ("omarchy.power" | widget)
           ]
       ),
       tray: (
         (if $omalandPanel != "" then [ { id: "omabar-omaland", type: "command", text: "󰏘",
               tooltip: "Omaland: Hyprland look and feel",
               onClick: ("omarchy-shell shell toggle " + $omalandPanel + " {}") } ] else [] end)
-        + ($others | map({ id: . }))
-        + [
-            { id: "omarchy.bluetooth" },
-            { id: "omarchy.network" },
-            { id: "omarchy.audio" },
-            { id: "omarchy.monitor" },
-            { id: "omarchy.keyboard-layout" }
-          ]
+        + ($others | map(widget))
+        + ([ "omarchy.bluetooth", "omarchy.network", "omarchy.audio", "omarchy.monitor", "omarchy.keyboard-layout" ]
+           | map(widget))
       )
     }
+  # Omaland opens from its drawer button only while the shell has it loaded.
+  | if $omalandPanel != "" and (((.plugins // []) | map(objects | .id) | index($omalandPanel)) == null)
+    then .plugins = ((.plugins // []) + [ { id: $omalandPanel } ]) else . end
   # Nothing else is carried over from the old layout: leftovers (clones of the
   # built-in clock or workspaces, older custom modules) would double up with
   # the Omabar ones. The old layout is kept in the backup.

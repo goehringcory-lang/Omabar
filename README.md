@@ -27,7 +27,7 @@ omarchy plugin add https://github.com/goehringcory-lang/Omabar.git
 ~/.config/omarchy/plugins/goehringcory.omabar/bin/omabar-setup
 ```
 
-`omabar-setup` builds the bar from the Omarchy you have installed, backs up `~/.config/omarchy/shell.json` the first time it runs, switches the shell to Omabar, lays out the widgets above, and sets the bar to glassy so Hyprland blurs what's behind it. Setup reads which plugins you have installed and places each plugin's widget exactly once: ai-usagebar beside the agents icon, Omaplug beside the clock, and every other plugin widget in the drawer panel. Nothing from your old layout is carried over, so nothing doubles up. Run it again after installing a companion plugin to add it to the bar, and after an Omarchy update so the bar matches the new shell.
+`omabar-setup` builds the bar from the Omarchy you have installed, backs up `~/.config/omarchy/shell.json` the first time it runs, switches the shell to Omabar, lays out the widgets above, and sets the bar to glassy so Hyprland blurs what's behind it. Setup reads which plugins you have installed and places each plugin's widget exactly once: ai-usagebar beside the agents icon, Omaplug beside the clock, and every other plugin widget in the drawer panel. The layout is written fresh each time, so nothing doubles up, but each widget keeps the settings it had. Run it again after installing a companion plugin to add it to the bar, and after an Omarchy update so the bar matches the new shell.
 
 Setup checks that the shell actually loaded Omabar. If it didn't, it prints what the shell logged instead of leaving you with the built-in bar and no explanation.
 
@@ -87,7 +87,7 @@ Omabar is Omarchy's own bar engine with a different body. `tools/omabar-patch.py
 
 Omarchy's bar changes between releases, so the engine isn't shipped ready-made. `omabar-setup` runs the patch against `$OMARCHY_PATH/shell/plugins/bar` on your machine and writes the result to `engine/`, which `Bar.qml` loads. `engine/` is ignored by git, so `omarchy plugin update` keeps working. If an edit no longer matches your Omarchy's bar, setup says so and uses `prebuilt/`, a copy built from Omarchy 4.5.0.
 
-The menu tile, workspace dots, player, playlist menu, clock, calendar and mail button are custom bar modules in `modules/`. `bin/omabar-gcal` reads Google Calendar. `tools/omabar-elsewhen-patch.py` swaps the world clock's times for split-flap tiles in a clone of `omarchy.elsewhen`, which `omabar-setup` makes for you, so the built-in plugin is never touched. The notification button is a command module backed by `bin/omabar-notifications`, and `bin/omabar-spotify` plays playlists through Spotify's MPRIS interface and lists them through the Spotify Web API.
+The menu tile, workspace dots, player, playlist menu, clock, calendar, notification bell and mail button are custom bar modules in `modules/`. `bin/omabar-gcal` reads Google Calendar. `tools/omabar-elsewhen-patch.py` swaps the world clock's times for split-flap tiles in a clone of `omarchy.elsewhen`, which `omabar-setup` makes for you, so the built-in plugin is never touched. `bin/omabar-spotify` plays playlists through Spotify's MPRIS interface and lists them through the Spotify Web API.
 
 `preview/` holds recordings (GIF and MP4) of the workspace and clock animations, rendered from the real module code with stand-ins for the Omarchy shell.
 

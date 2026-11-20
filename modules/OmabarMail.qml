@@ -46,6 +46,8 @@ Item {
           root.unread = Math.max(0, Number(data.unread) || 0)
           root.inboxes = Array.isArray(data.inboxes) ? data.inboxes : []
           if (root.unread > before) pulse.restart()
+          // Read somewhere else (a phone, webmail): nothing is left to light up for.
+          else if (root.unread === 0 && before > 0) root.clear()
         } catch (e) {}
       }
     }
