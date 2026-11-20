@@ -1,5 +1,5 @@
 Omabar includes code generated from Omarchy (https://github.com/omacom/omarchy):
-Bar.qml and BarModel.js are derived from shell/plugins/bar/, and
+The bar engine (prebuilt/, and engine/ built by bin/omabar-setup) is derived from shell/plugins/bar/, and
 modules/OmabarWorkspaces.qml follows shell/plugins/bar/widgets/Workspaces.qml.
 
 Omarchy is released under the MIT License:

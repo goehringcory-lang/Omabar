@@ -4,6 +4,11 @@
 // Lofi Beats and Discover Weekly. With Spotify closed it rests as a small
 // disc and chevron, so a playlist is still one click away.
 //
+// While a track is loaded the player bulges out of the bar: a glass capsule a
+// little taller than the pill, with larger album art and the song and artist
+// on two lines. It swells into the gap the bar floats in, so it never covers
+// a window.
+//
 // Settings (inline on the shell.json entry):
 //   player         - which MPRIS player to follow (default "spotify")
 //   anyPlayer      - fall back to whatever is playing when that one isn't open (default false)
@@ -12,6 +17,7 @@
 //   discoverWeekly - your Discover Weekly link (it's different for every account)
 //   playlists      - extra pinned playlists: [{ "name": "…", "uri": "…" }]
 //   showIdle       - keep the small disc and chevron while Spotify is closed (default true)
+//   bulge          - swell out of the bar while a track is loaded (default true)
 import QtQuick
 import QtQuick.Effects
 import Quickshell
@@ -41,9 +47,17 @@ Item {
   readonly property int barSize: bar ? bar.barSize : 34
   readonly property color ink: bar ? bar.barForeground : Commons.Color.foreground
   readonly property string fontName: bar && bar.fontFamily ? bar.fontFamily : "monospace"
+  // How far the capsule reaches past the bar on each side, eased in and out.
+  readonly property bool bulging: active && !vertical && setting("bulge", true) !== false
+  property real bulge: bulging ? Style.space(6) : 0
+  Behavior on bulge { NumberAnimation { duration: Style.duration(320); easing.type: Easing.OutBack; easing.overshoot: 1.4 } }
+  readonly property int discSize: Math.round(barSize * 0.72 + bulge * 2)
+  readonly property color base: bar && bar.background ? bar.background : Commons.Color.background
+  readonly property bool lightBase: (0.2126 * base.r + 0.7152 * base.g + 0.0722 * base.b) > 0.55
+
   readonly property string dimInk: Qt.rgba(ink.r, ink.g, ink.b, 0.55).toString()
 
-  function escape(text) {
+  function escapeText(text) {
     return String(text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
   }
 
@@ -95,7 +109,7 @@ Item {
   }
 
   visible: shown
-  implicitWidth: !shown ? 0 : (vertical ? barSize : content.implicitWidth + Style.space(6))
+  implicitWidth: !shown ? 0 : (vertical ? barSize : content.implicitWidth + Style.space(6) + Math.round(bulge * 3))
   implicitHeight: !shown ? 0 : (vertical ? content.implicitHeight + Style.space(6) : barSize)
 
   OmabarPlaylists {
@@ -133,8 +147,9 @@ Item {
 
   component Disc: Item {
     id: disc
-    implicitWidth: Math.round(root.barSize * 0.72)
-    implicitHeight: implicitWidth
+    property int size: Math.round(root.barSize * 0.72)
+    implicitWidth: size
+    implicitHeight: size
 
     // The cover, masked to a circle.
     Image {
@@ -212,6 +227,47 @@ Item {
     }
   }
 
+  // ── the bulge ──────────────────────────────────────────────────────────
+  // A glass capsule behind the player, taller than the bar by `bulge` on each
+  // side. Drawn outside the widget's own bounds, which the bar doesn't clip.
+  Item {
+    id: capsule
+    visible: root.bulge > 0.5
+    z: -1
+    anchors.centerIn: parent
+    width: parent.width
+    height: root.barSize + root.bulge * 2
+    opacity: Math.min(1, root.bulge / Style.space(4))
+
+    RectangularShadow {
+      anchors.fill: capsuleGlass
+      radius: capsuleGlass.radius
+      offset.y: Style.space(2)
+      blur: Style.space(12)
+      spread: -Style.space(1)
+      color: Qt.rgba(0, 0, 0, root.lightBase ? 0.16 : 0.38)
+    }
+    Rectangle {
+      id: capsuleGlass
+      anchors.fill: parent
+      radius: height / 2
+      color: Qt.rgba(root.base.r, root.base.g, root.base.b, 0.82)
+      border.width: 1
+      border.color: Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, 0.30)
+    }
+    // Light across the top half, like the bar's own sheen.
+    Rectangle {
+      anchors.fill: parent
+      anchors.margins: 1
+      radius: height / 2
+      gradient: Gradient {
+        GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, root.lightBase ? 0.5 : 0.12) }
+        GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, root.lightBase ? 0.10 : 0.02) }
+        GradientStop { position: 1.0; color: Qt.rgba(1, 1, 1, 0.0) }
+      }
+    }
+  }
+
   // ── layout ─────────────────────────────────────────────────────────────
   Item {
     id: content
@@ -247,7 +303,7 @@ Item {
 
       Item { width: Style.space(4); height: 1; visible: root.active }
 
-      Disc { anchors.verticalCenter: parent.verticalCenter }
+      Disc { anchors.verticalCenter: parent.verticalCenter; size: root.discSize }
 
       Item { width: Style.space(6); height: 1 }
 
@@ -256,37 +312,54 @@ Item {
         id: track
         visible: root.active
         anchors.verticalCenter: parent.verticalCenter
-        implicitWidth: Math.min(root.maxTextWidth, label.implicitWidth)
+        implicitWidth: Math.min(root.maxTextWidth, Math.max(label.implicitWidth, artistLine.visible ? artistLine.implicitWidth : 0))
         implicitHeight: root.barSize
 
-        Text {
-          id: label
+        Column {
           anchors.verticalCenter: parent.verticalCenter
-          anchors.verticalCenterOffset: -1
           width: parent.width
-          elide: Text.ElideRight
-          textFormat: Text.StyledText
-          text: root.artist
-            ? root.escape(root.title) + "<font color='" + root.dimInk + "'>  ·  " + root.escape(root.artist) + "</font>"
-            : root.escape(root.title)
-          color: root.ink
-          font.family: root.fontName
-          font.pixelSize: Style.font.bodySmall
-        }
-        Rectangle {
-          anchors.left: parent.left
-          anchors.right: parent.right
-          anchors.top: label.bottom
-          anchors.topMargin: Style.space(2)
-          height: 2
-          radius: 1
-          color: Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.14)
+          spacing: 1
+
+          // Bulging: the song, with the artist on its own line beneath.
+          // Flat: both on one line.
+          Text {
+            id: label
+            width: parent.width
+            elide: Text.ElideRight
+            textFormat: Text.StyledText
+            text: root.artist && !root.bulging
+              ? root.escapeText(root.title) + "<font color='" + root.dimInk + "'>  ·  " + root.escapeText(root.artist) + "</font>"
+              : root.escapeText(root.title)
+            color: root.ink
+            font.family: root.fontName
+            font.pixelSize: Style.font.bodySmall
+            font.weight: root.bulging ? Font.DemiBold : Font.Normal
+          }
+          Text {
+            id: artistLine
+            visible: root.bulging && root.artist !== ""
+            width: parent.width
+            elide: Text.ElideRight
+            textFormat: Text.PlainText
+            text: root.artist
+            color: root.ink
+            opacity: 0.6
+            font.family: root.fontName
+            font.pixelSize: Style.font.caption
+          }
+          Item { width: 1; height: Style.space(2) }
           Rectangle {
-            height: parent.height
+            width: parent.width
+            height: 2
             radius: 1
-            width: parent.width * root.progress
-            color: Commons.Color.accent
-            Behavior on width { NumberAnimation { duration: Style.duration(900) } }
+            color: Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.14)
+            Rectangle {
+              height: parent.height
+              radius: 1
+              width: parent.width * root.progress
+              color: Commons.Color.accent
+              Behavior on width { NumberAnimation { duration: Style.duration(900) } }
+            }
           }
         }
 
