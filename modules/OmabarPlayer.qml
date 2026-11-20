@@ -13,7 +13,7 @@
 //   player         - which MPRIS player to follow (default "spotify")
 //   anyPlayer      - fall back to whatever is playing when that one isn't open (default false)
 //   maxWidth       - widest the track text may grow, in px (default 220)
-//   lofi           - link or URI behind the Lofi Beats button (default: Spotify's "lofi beats")
+//   lofi           - link or URI behind the Lofi Beats button (default: Cory's Lofi Beats playlist)
 //   discoverWeekly - your Discover Weekly link (it's different for every account)
 //   playlists      - extra pinned playlists: [{ "name": "…", "uri": "…" }]
 //   showIdle       - keep the small disc and chevron while Spotify is closed (default true)

@@ -22,7 +22,7 @@ Item {
   readonly property string fontName: player ? player.fontName : "monospace"
   readonly property bool bottomBar: bar && bar.position === "bottom"
 
-  readonly property string lofiUri: String(player ? player.setting("lofi", "spotify:playlist:37i9dQZF1DWWQRwui0ExPn") : "")
+  readonly property string lofiUri: String(player ? player.setting("lofi", "spotify:playlist:0vvXsWCC9xrXsKd4FyS8kM") : "")
   readonly property string discoverUri: String(player ? player.setting("discoverWeekly", "") : "")
   readonly property var pinned: {
     var list = player ? player.setting("playlists", []) : []
