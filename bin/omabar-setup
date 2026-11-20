@@ -5,6 +5,8 @@
 #   omabar-setup --restore  put back the shell.json from before setup
 #   omabar-setup --rebuild  rebuild the bar after an Omarchy update, layout untouched
 #   omabar-setup --doctor   print what is installed and what the shell logged
+#   omabar-setup --world-clock "City, Region=Zone" ...
+#                           set the world clock's cities (kept through every setup)
 #
 # Layout
 #   left    Omarchy menu (accent tile), workspace dots with a water-drop switch
@@ -37,11 +39,37 @@ fail() {
 }
 
 usage() {
-  sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
 }
+
+# The world clock's cities, as `omabar-setup --world-clock` saved them last.
+WORLD_CLOCK_FILE="$HOME/.config/omabar/world-clock.json"
+world_clock_override=""
 
 case ${1:-} in
 "" | --restore | --rebuild | --doctor) ;;
+--world-clock)
+  shift
+  (($# > 0)) || fail 'name at least one city: --world-clock "Jonesborough, Tennessee=America/New_York"'
+  world_clock_override="[]"
+  for spec in "$@"; do
+    [[ $spec == *=* ]] || fail "\"$spec\" needs a time zone after an =, like \"Moyogalpa, Nicaragua=America/Managua\""
+    zone=${spec##*=}
+    place=${spec%=*}
+    [[ $zone =~ ^[A-Za-z0-9_+/-]+$ ]] || fail "\"$zone\" isn't a time zone name (see: timedatectl list-timezones)"
+    [[ -e /usr/share/zoneinfo/$zone ]] || fail "no time zone called $zone (see: timedatectl list-timezones)"
+    # Elsewhen keeps commas out of a city's name, so what follows the first
+    # comma becomes its region.
+    name=$(sed 's/,.*//; s/[|]/ /g; s/^ *//; s/ *$//' <<<"$place")
+    region=""
+    [[ $place == *,* ]] && region=$(sed 's/^[^,]*,//; s/^ *//; s/ *$//' <<<"$place")
+    [[ -n $name ]] || fail "\"$spec\" needs a city name before the ="
+    world_clock_override=$(jq -c --arg name "$name" --arg zone "$zone" --arg region "$region" \
+      '. + [ { name: $name, zone: $zone } + (if $region == "" then {} else { region: $region } end) ]' \
+      <<<"$world_clock_override")
+  done
+  set -- --world-clock
+  ;;
 -h | --help)
   usage
   exit 0
@@ -203,6 +231,10 @@ doctor() {
   echo "active in shell: $(omabar_active)"
   echo "== shell.json"
   jq -c '.bar | {id, position, background, layout: ((.layout // {}) | map_values(map(.id)))}' "$CONFIG_FILE" 2>&1 || true
+  echo "== world clock"
+  jq -c '[ .bar.layout[]? | arrays | .[] | objects | select(.id | test("elsewhen")) | {id, cities, zones} ]' "$CONFIG_FILE" 2>&1 || true
+  echo "saved copy: $(jq -c . "$WORLD_CLOCK_FILE" 2>/dev/null || echo none)"
+  shell_log -b | grep -i -E 'elsewhen|updateEntryInline|persist' | tail -n 20
   echo "== plugins"
   omarchy plugin list 2>&1 | grep -v -E '^omarchy\.' || true
   echo "== shell log (this boot)"
@@ -314,11 +346,21 @@ fi
 tmp=$(mktemp "$CONFIG_FILE.XXXXXX")
 scratch+=("$tmp")
 
+# The world clock's cities: the ones you just named with --world-clock, else
+# the ones on its entry now (under whichever id it had), else the copy saved
+# the last time setup ran. Saved afresh below, so a lost list comes back.
+world_clock_saved="null"
+if [[ -s $WORLD_CLOCK_FILE ]] && jq -e 'type == "array" and length > 0' "$WORLD_CLOCK_FILE" >/dev/null 2>&1; then
+  world_clock_saved=$(jq -c . "$WORLD_CLOCK_FILE")
+fi
+
 jq -S \
   --arg bar "$PLUGIN_ID" \
   --arg dir "~/.config/omarchy/plugins/$PLUGIN_ID" \
   --argjson plugins "$plugins_json" \
-  --arg elsewhen "$elsewhen_id" '
+  --arg elsewhen "$elsewhen_id" \
+  --argjson worldClockOverride "${world_clock_override:-null}" \
+  --argjson worldClockSaved "$world_clock_saved" '
   def obj: if type == "object" then . else {} end;
   # Bar widgets from plugins you installed, each placed exactly once. Clones of
   # built-in widgets are skipped: Omabar already draws its own clock,
@@ -398,11 +440,35 @@ jq -S \
       | map({ key: .id, value: del(.id, .type, .source, .exec, .interval, .text, .tooltip, .onClick, .onRightClick, .onMiddleClick) })
       | from_entries) as $kept
   | .bar.layout |= map_values(map(($kept[.id] // {}) + .))
+  # The world clock saves its cities on its own entry. Find them under any id
+  # it has had (omarchy.elsewhen, or a clone of it), so a renamed entry keeps
+  # its list, and fall back to the saved copy if the entry has none.
+  | ([ "omarchy.elsewhen", $elsewhen ]
+      + ($plugins | map(select(.clonedFrom == "omarchy.elsewhen") | .id))) as $elsewhenIds
+  | ([ ($old | obj | .bar | obj | .layout | obj | .[] | arrays | .[]),
+       ($old | obj | .plugins | if type == "array" then .[] else empty end) ]
+      | map(objects | select(((.id as $id | $elsewhenIds | index($id)) != null)
+              and (.cities | type == "array" and length > 0))) | first | .cities?) as $oldCities
+  | ($worldClockOverride // $oldCities // $worldClockSaved) as $cities
+  | if $cities == null then .
+    else .bar.layout |= map_values(map(if .id == $elsewhen then .cities = $cities | del(.zones) else . end))
+    end
 ' "$source_file" >"$tmp"
 
 [[ -s $tmp ]] || fail "could not write the new layout; your shell.json is unchanged"
 started=$(date '+%Y-%m-%d %H:%M:%S')
 mv "$tmp" "$CONFIG_FILE"
+
+# Keep a copy of the world clock's cities outside shell.json.
+world_clock_now=$(jq -c --arg id "$elsewhen_id" \
+  '[ .bar.layout[]? | arrays | .[] | objects | select(.id == $id) | .cities | arrays ] | first // empty' \
+  "$CONFIG_FILE" 2>/dev/null || true)
+if [[ -n $world_clock_now && $world_clock_now != "[]" ]]; then
+  mkdir -p "$(dirname "$WORLD_CLOCK_FILE")"
+  jq . <<<"$world_clock_now" >"$WORLD_CLOCK_FILE"
+fi
+[[ -n $world_clock_override ]] &&
+  echo "World clock: $(jq -r 'map(.name + (if .region then ", " + .region else "" end) + " (" + .zone + ")") | join(", ")' <<<"$world_clock_override")"
 
 # After an Omarchy update the bar has to be rebuilt from the new shell's own;
 # this has Omarchy do it at the end of `omarchy update`.
