@@ -41,6 +41,17 @@ Setup checks that the shell actually loaded Omabar. If it didn't, it prints what
 
 prints your Omarchy version, what Omabar built, your bar layout, and the shell's log lines about plugins. `journalctl -t omarchy-shell -b` has the full shell log.
 
+### World clock
+
+To pick the world clock's cities, name each one with its time zone:
+
+```bash
+~/.config/omarchy/plugins/goehringcory.omabar/bin/omabar-setup --world-clock \
+  "Jonesborough, Tennessee=America/New_York" "Moyogalpa, Rivas, Nicaragua=America/Managua"
+```
+
+The world clock shows the part before the first comma as the city's name and keeps the rest as its region. `timedatectl list-timezones` lists the zone names. Setup keeps the cities through every later run, whatever id the world clock's entry had, and saves a copy in `~/.config/omabar/world-clock.json` that it puts back if the entry ever loses them. Cities you add or remove in the world clock itself are kept too.
+
 ### Spotify playlists
 
 Lofi Beats and your pinned playlists work right away. To list every playlist on your account, open the player's menu and choose **Connect Spotify** (or run `~/.config/omarchy/plugins/goehringcory.omabar/bin/omabar-spotify login`). It walks you through making a free Spotify developer app, since Spotify requires one per user, and stores the login token in `~/.config/omabar/`, readable only by you.
