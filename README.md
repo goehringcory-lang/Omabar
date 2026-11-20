@@ -6,7 +6,7 @@ A floating glass bar for [Omarchy](https://omarchy.org) 4. It sits over your des
 
 ![Workspace switch](preview/workspaces-drop.gif)
 
-**Center:** status indicators, a small Spotify player (previous, play/pause, next, round album art that turns while music plays, the track, and a progress line), and a split-flap clock in the accent color whose digits flip like an old departures board. Click the clock to flip it to the date. [Omaplug](https://github.com/fross100/omaplug) sits beside the clock when installed, so you can add and remove plugins from the bar.
+**Center:** status indicators, a small Spotify player (previous, play/pause, next, round album art that turns while music plays, the track, and a progress line), and a split-flap clock in the accent color whose digits flip like an old departures board. Click the clock for a calendar drop-down (with your Google Calendar), right-click to flip it to the date. Omarchy's world clock (Elsewhen) stays beside it, restyled with the same split-flap tiles. [Omaplug](https://github.com/fross100/omaplug) sits beside the clock when installed, so you can add and remove plugins from the bar.
 
 ![Split-flap clock](preview/split-flap-clock.gif)
 
@@ -35,6 +35,18 @@ Lofi Beats and your pinned playlists work right away. To list every playlist on 
 
 Discover Weekly is a different playlist for every account, so the menu asks for your link the first time you click it.
 
+### Google Calendar
+
+The clock's drop-down shows the month, colored dots for days with events, and the agenda for the day you pick. To fill it from your Google Calendar, open it and choose **Connect Google Calendar** (or run `~/.config/omarchy/plugins/goehringcory.omabar/bin/omabar-gcal login`). Like Spotify, Google needs a client of your own, once:
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), make a project, enable the **Google Calendar API**, and set up the OAuth consent screen (External, add yourself as a test user).
+2. Under **Credentials**, create an **OAuth client ID** of type **Desktop app** and download its JSON.
+3. Run the login command and paste the path to that JSON (or the client ID and secret) when asked. A browser opens to sign in.
+
+Omabar only asks for read-only calendar access. The token is stored in `~/.config/omabar/`, readable only by you.
+
+**Calendars** at the bottom of the drop-down lists every calendar you own and every calendar shared with you, each in its Google color. Tick the ones to show. Events keep the colors you set in Google.
+
 ### Thunderbird
 
 The mail button notices new mail from Thunderbird's own new-mail notifications, so leave Thunderbird running (it can sit in the background) with new-mail alerts on, which is its default. Clicking opens Thunderbird and clears the accent; so does switching to its window. Right-click marks it seen.
@@ -53,6 +65,7 @@ Everything is normal Omarchy bar configuration, so you can drag widgets around, 
 - **Look:** double-click empty bar space, or run `omarchy bar background opaque|glassy|none`, to switch between solid glass, frosted glass, and clear.
 - **Player:** `omarchy bar set omabar-player player <name>` follows a different MPRIS player, `anyPlayer true` falls back to whatever is playing, `maxWidth 260` gives the track more room, `lofi <link>` points the Lofi button at another playlist, and `showIdle false` hides the player while Spotify is closed. Pin playlists with `omarchy bar set omabar-player playlists '[{"name":"Focus","uri":"spotify:playlist:…"}]' --json`.
 - **Clock:** `omarchy bar set omabar-clock twelveHour true` for 12-hour time, `showDate false` for just the tiles.
+- **Motion:** animations follow Omarchy's reduce-motion setting. Everything is drawn by the GPU at your display's refresh rate, antialiased and scaled with mipmaps, so it stays sharp on HiDPI screens.
 - **Workspace dots:** `omarchy bar set omabar-workspaces persistent 7` changes how many dots always show.
 - **Size:** the bar height follows `[bar] size-horizontal` in `~/.config/omarchy/shell.toml`, with a 34px floor.
 
@@ -69,9 +82,9 @@ python3 tools/omabar-patch.py "$OMARCHY_PATH/shell/plugins/bar" .
 
 The script refuses to write anything if an edit no longer matches, so an update can't leave you with a half-patched bar.
 
-The menu tile, workspace dots, player, playlist menu, clock and mail button are custom bar modules in `modules/`. The notification button is a command module backed by `bin/omabar-notifications`, and `bin/omabar-spotify` plays playlists through Spotify's MPRIS interface and lists them through the Spotify Web API.
+The menu tile, workspace dots, player, playlist menu, clock, calendar and mail button are custom bar modules in `modules/`. `bin/omabar-gcal` reads Google Calendar. `tools/omabar-elsewhen-patch.py` swaps the world clock's times for split-flap tiles in a clone of `omarchy.elsewhen`, which `omabar-setup` makes for you, so the built-in plugin is never touched. The notification button is a command module backed by `bin/omabar-notifications`, and `bin/omabar-spotify` plays playlists through Spotify's MPRIS interface and lists them through the Spotify Web API.
 
-`preview/` holds recordings of the workspace and clock animations, rendered from the real module code with stand-ins for the Omarchy shell.
+`preview/` holds recordings (GIF and MP4) of the workspace and clock animations, rendered from the real module code with stand-ins for the Omarchy shell.
 
 ## Credits
 

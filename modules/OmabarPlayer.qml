@@ -144,16 +144,17 @@ Item {
       sourceSize: Qt.size(disc.width * 2, disc.height * 2)
       fillMode: Image.PreserveAspectCrop
       asynchronous: true
+      mipmap: true
       smooth: true
       visible: false
-      layer.enabled: true
+      layer.enabled: true; layer.smooth: true
     }
     Rectangle {
       id: circleMask
       anchors.fill: parent
       radius: width / 2
       visible: false
-      layer.enabled: true
+      layer.enabled: true; layer.smooth: true
     }
     MultiEffect {
       id: art

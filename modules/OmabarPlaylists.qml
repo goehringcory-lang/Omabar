@@ -289,10 +289,11 @@ Item {
         sourceSize: Qt.size(64, 64)
         fillMode: Image.PreserveAspectCrop
         asynchronous: true
+      mipmap: true
         visible: false
-        layer.enabled: true
+        layer.enabled: true; layer.smooth: true
       }
-      Rectangle { id: thumbMask; anchors.fill: parent; radius: Style.space(6); visible: false; layer.enabled: true }
+      Rectangle { id: thumbMask; anchors.fill: parent; radius: Style.space(6); visible: false; layer.enabled: true; layer.smooth: true }
       MultiEffect {
         anchors.fill: parent
         source: cover
