@@ -1854,7 +1854,7 @@ Item {
         readonly property real radius: Math.min(width, height) / 2
         // Opaque, glassy and clear map to how much of the theme background
         // fills the glass; Hyprland blurs what is behind a glassy bar.
-        readonly property real fillAlpha: root.transparent ? 0.0 : (root.glassy ? 0.48 : 0.9)
+        property real fillAlpha: root.transparent ? 0.0 : (root.glassy ? 0.48 : 0.9)
         readonly property color edge: root.omabarLightTheme ? Qt.rgba(0, 0, 0, 0.10) : Qt.rgba(1, 1, 1, 0.10)
         Behavior on fillAlpha { NumberAnimation { duration: Style.duration(250); easing.type: Easing.OutCubic } }
 

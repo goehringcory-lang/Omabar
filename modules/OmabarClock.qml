@@ -108,9 +108,11 @@ Item {
   }
 
   HoverHandler { cursorShape: Qt.PointingHandCursor }
-  TapHandler {
+  OmabarClickTarget {
+    anchors.fill: parent
+    bar: root.bar
     acceptedButtons: Qt.LeftButton | Qt.RightButton
-    onTapped: function(eventPoint, button) {
+    onPressed: function(button) {
       if (button === Qt.RightButton) root.dateMode = !root.dateMode
       else root.calendarOpen = !root.calendarOpen
     }

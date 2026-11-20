@@ -391,7 +391,14 @@ Item {
         }
 
         HoverHandler { id: hover; cursorShape: Qt.PointingHandCursor }
-        TapHandler { onTapped: root.focusWorkspace(cell.modelData) }
+        OmabarClickTarget {
+          // The whole height of the bar, and half the gap either side.
+          anchors.centerIn: parent
+          width: root.vertical ? root.barSize : cell.width + root.gap
+          height: root.vertical ? cell.height + root.gap : root.barSize
+          bar: root.bar
+          onPressed: root.focusWorkspace(cell.modelData)
+        }
       }
     }
   }
