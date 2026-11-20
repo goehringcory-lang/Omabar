@@ -2900,7 +2900,8 @@ Item {
       // Ahead of bar: a widget can start laying itself out the moment it has
       // a bar, as the indicators do by reporting which are already active.
       if ("fixedEdge" in target) target.fixedEdge = fixedEdge
-      if ("bar" in target) target.bar = firstParty
+      var omabarOwn = qmlCustom && String(entry && entry.source || "").indexOf("/goehringcory.omabar/modules/") !== -1
+      if ("bar" in target) target.bar = (firstParty || omabarOwn)
         ? root : root.pluginBarApiFor(pluginApiId, moduleName, registered)
       if ("moduleName" in target) target.moduleName = moduleName
       if ("settings" in target) target.settings = moduleSettings

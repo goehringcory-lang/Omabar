@@ -331,8 +331,7 @@ Item {
           opacity: editHover.hovered || root.editing ? 1 : 0.55
           font.family: root.fontName
           font.pixelSize: Style.font.caption
-          HoverHandler { id: editHover; cursorShape: Qt.PointingHandCursor }
-          TapHandler { onTapped: root.editing = !root.editing }
+          MouseArea { id: editHover; anchors.fill: parent; anchors.margins: -Style.space(6); hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.editing = !root.editing; readonly property bool hovered: containsMouse }
         }
       }
 
@@ -484,7 +483,7 @@ Item {
     radius: Style.space(14)
     color: Qt.rgba(root.ink.r, root.ink.g, root.ink.b, tileHover.hovered ? 0.14 : 0.07)
     opacity: dimmed ? 0.35 : 1
-    scale: tileTap.pressed ? 0.96 : 1
+    scale: tileHover.pressed ? 0.96 : 1
     Behavior on color { ColorAnimation { duration: Style.duration(120) } }
     Behavior on scale { NumberAnimation { duration: Style.duration(120) } }
 
@@ -511,8 +510,14 @@ Item {
       }
     }
 
-    HoverHandler { id: tileHover; cursorShape: Qt.PointingHandCursor }
-    TapHandler { id: tileTap; onTapped: tile.picked(Qt.LeftButton) }
+    MouseArea {
+      id: tileHover
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      readonly property bool hovered: containsMouse
+      onClicked: tile.picked(Qt.LeftButton)
+    }
   }
 
   component AppIcon: Rectangle {
@@ -534,10 +539,14 @@ Item {
       asynchronous: true
     }
 
-    HoverHandler { id: appHover; cursorShape: Qt.PointingHandCursor }
-    TapHandler {
+    MouseArea {
+      id: appHover
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
       acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
-      onTapped: function(eventPoint, button) { root.pressApp(appTile.app, button) }
+      readonly property bool hovered: containsMouse
+      onClicked: function(mouse) { root.pressApp(appTile.app, mouse.button) }
     }
 
     // Names the app in the section title while hovered.
@@ -598,7 +607,14 @@ Item {
       font.pixelSize: Style.font.bodySmall
     }
 
-    HoverHandler { id: rowHover; cursorShape: Qt.PointingHandCursor }
-    TapHandler { enabled: menuRow.enabled; onTapped: menuRow.picked() }
+    MouseArea {
+      id: rowHover
+      anchors.fill: parent
+      hoverEnabled: true
+      enabled: menuRow.enabled
+      cursorShape: Qt.PointingHandCursor
+      readonly property bool hovered: containsMouse
+      onClicked: menuRow.picked()
+    }
   }
 }
