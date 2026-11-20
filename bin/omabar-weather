@@ -1,0 +1,560 @@
+#!/usr/bin/env python3
+"""Omabar's National Weather Service (weather.gov) helper.
+
+    omabar-weather [--lat LAT --lon LON | --url URL] [--days 5] [--units F|C] [--force]
+
+Fetches the point forecast, hourly current conditions, and active alerts from
+api.weather.gov for the given coordinates (or forecast.weather.gov MapClick
+URL) and prints a compact JSON summary for OmabarWeather.qml.
+
+Point metadata is cached for 24 hours and forecasts for 15 minutes in
+~/.cache/omabar/. When weather.gov can't be reached, the last saved forecast is
+returned with an error note so the drop-down still has something to show.
+"""
+import argparse
+import concurrent.futures
+import datetime as dt
+import hashlib
+import json
+import math
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+sys.dont_write_bytecode = True  # keep the plugin checkout clean
+
+DEFAULT_LAT = 37.67552934366611
+DEFAULT_LON = -119.78244423866272
+DEFAULT_DAYS = 5
+DEFAULT_UNITS = "F"
+
+CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "omabar")
+POINT_CACHE_SECONDS = 86400
+FORECAST_CACHE_SECONDS = 900
+TIMEOUT = 12
+RETRY_CODES = {500, 502, 503, 504}
+HEADERS = {
+    "User-Agent": "(Omabar, https://github.com/goehringcory-lang/Omabar)",
+    "Accept": "application/geo+json",
+}
+
+WEEKDAYS = {
+    "sunday": "Sun",
+    "monday": "Mon",
+    "tuesday": "Tue",
+    "wednesday": "Wed",
+    "thursday": "Thu",
+    "friday": "Fri",
+    "saturday": "Sat",
+}
+
+
+# ── storage ───────────────────────────────────────────────────────────────
+
+def read_json(path, fallback=None):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return fallback
+
+
+def write_cache(name, data):
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    path = os.path.join(CACHE_DIR, name)
+    partial = f"{path}.{os.getpid()}.tmp"
+    with open(partial, "w", encoding="utf-8") as handle:
+        json.dump({"at": time.time(), "data": data}, handle)
+    os.replace(partial, path)
+
+
+def read_cache(name, max_age=None):
+    """Cached data no older than max_age seconds; any age when max_age is None."""
+    cached = read_json(os.path.join(CACHE_DIR, name))
+    if not isinstance(cached, dict) or "data" not in cached:
+        return None
+    if max_age is None or 0 <= time.time() - cached.get("at", 0) < max_age:
+        return cached["data"]
+    return None
+
+
+# ── coordinates & units ───────────────────────────────────────────────────
+
+def valid_coords(lat, lon):
+    return (
+        isinstance(lat, (int, float))
+        and isinstance(lon, (int, float))
+        and math.isfinite(lat)
+        and math.isfinite(lon)
+        and -90.0 <= lat <= 90.0
+        and -180.0 <= lon <= 180.0
+    )
+
+
+def parse_url_coords(url):
+    """Extract (lat, lon) from a weather.gov MapClick or api.weather.gov/points URL."""
+    text = str(url or "").strip()
+    if not text:
+        return None
+    parsed = urllib.parse.urlparse(text)
+    query = urllib.parse.parse_qs(parsed.query)
+    lower = {k.lower(): v for k, v in query.items()}
+    if "lat" in lower and "lon" in lower:
+        try:
+            lat = float(lower["lat"][0])
+            lon = float(lower["lon"][0])
+            if valid_coords(lat, lon):
+                return lat, lon
+        except (TypeError, ValueError, IndexError):
+            return None
+    match = re.search(r"/points/(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)", parsed.path)
+    if match:
+        try:
+            lat = float(match.group(1))
+            lon = float(match.group(2))
+            if valid_coords(lat, lon):
+                return lat, lon
+        except ValueError:
+            return None
+    return None
+
+
+def resolve_coords(lat=None, lon=None, url=None):
+    if url:
+        found = parse_url_coords(url)
+        if found is None:
+            raise ValueError("Could not read latitude and longitude from that weather.gov link.")
+        lat, lon = found
+    else:
+        lat = DEFAULT_LAT if lat is None else lat
+        lon = DEFAULT_LON if lon is None else lon
+        if not valid_coords(lat, lon):
+            raise ValueError("Latitude must be between -90 and 90, longitude between -180 and 180.")
+    # NWS gridpoints are ~2.5 km and redirect >4 decimal places to 4 decimal places.
+    return round(float(lat), 4), round(float(lon), 4)
+
+
+def convert_temp(value, src_unit, dst_unit):
+    if value is None:
+        return None
+    try:
+        temp = float(value)
+    except (TypeError, ValueError):
+        return None
+    src = str(src_unit or "F").upper()
+    dst = str(dst_unit or "F").upper()
+    if src == "F" and dst == "C":
+        temp = (temp - 32.0) * 5.0 / 9.0
+    elif src == "C" and dst == "F":
+        temp = temp * 9.0 / 5.0 + 32.0
+    return int(round(temp))
+
+
+def quantity_int(field):
+    if isinstance(field, dict):
+        value = field.get("value")
+    else:
+        value = field
+    if value is None:
+        return None
+    try:
+        num = float(value)
+        return int(round(num)) if math.isfinite(num) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def format_wind(direction, speed):
+    parts = [str(p).strip() for p in (direction, speed) if p and str(p).strip()]
+    return " ".join(parts)
+
+
+# ── condition classification ──────────────────────────────────────────────
+
+def _icon_code(icon_url):
+    text = str(icon_url or "")
+    match = re.search(r"/icons/[^/]+/(?:day|night)/([a-z0-9_]+)", text, re.I)
+    return match.group(1).lower() if match else ""
+
+
+def classify_condition(short_forecast, icon_url="", is_daytime=True):
+    text = str(short_forecast or "").lower()
+    if any(w in text for w in ("thunder", "t-storm", "tstorm")):
+        return "thunderstorm"
+    if "hail" in text:
+        return "hail"
+    if any(w in text for w in ("sleet", "freezing", "wintry mix", "rain and snow", "snow and rain", "ice pellets")):
+        return "sleet"
+    if any(w in text for w in ("blizzard", "heavy snow")):
+        return "heavy-snow"
+    if any(w in text for w in ("snow", "flurr")):
+        return "snow"
+    if any(w in text for w in ("heavy rain", "downpour")):
+        return "heavy-rain"
+    if any(w in text for w in ("rain", "shower", "drizzle", "sprinkle")):
+        return "rain"
+    if any(w in text for w in ("fog", "mist", "haze", "smoke", "dust", "ash")):
+        return "fog"
+    if any(w in text for w in ("overcast", "mostly cloudy")):
+        return "cloudy"
+    if any(w in text for w in ("partly cloudy", "partly sunny", "mostly sunny", "mostly clear",
+                               "increasing clouds", "decreasing clouds", "patchy")):
+        return "partly-cloudy" if is_daytime else "partly-cloudy-night"
+    if "cloudy" in text or "clouds" in text:
+        return "cloudy"
+    if any(w in text for w in ("sunny", "clear", "fair", "hot", "cold")):
+        return "sunny" if is_daytime else "clear-night"
+    if any(w in text for w in ("wind", "breezy", "blustery", "gusty")):
+        return "windy"
+
+    code = _icon_code(icon_url)
+    if code.startswith("tsra"):
+        return "thunderstorm"
+    if code in ("fzra", "ra_sn", "raip", "sleet", "rain_fzra", "snow_fzra", "snow_sleet", "rain_sleet"):
+        return "sleet"
+    if code in ("blizzard",):
+        return "heavy-snow"
+    if code in ("snow", "sn"):
+        return "snow"
+    if code in ("rain", "rain_showers", "rain_showers_hi", "shra", "ra"):
+        return "rain"
+    if code in ("fog", "haze", "smoke", "dust"):
+        return "fog"
+    if code in ("ovc", "bkn"):
+        return "cloudy"
+    if code in ("sct", "few"):
+        return "partly-cloudy" if is_daytime else "partly-cloudy-night"
+    if code in ("skc", "hot", "cold"):
+        return "sunny" if is_daytime else "clear-night"
+    if code.startswith("wind_"):
+        return "windy"
+    return "cloudy"
+
+
+# ── HTTP ──────────────────────────────────────────────────────────────────
+
+def api_get(url):
+    last_error = None
+    for attempt in range(2):
+        request = urllib.request.Request(url, headers=HEADERS)
+        try:
+            with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+                return json.loads(response.read(8 * 1024 * 1024).decode("utf-8", "replace"))
+        except urllib.error.HTTPError as error:
+            last_error = error
+            if error.code in RETRY_CODES and attempt == 0:
+                time.sleep(0.4)
+                continue
+            raise
+        except (urllib.error.URLError, OSError, ValueError) as error:
+            last_error = error
+            if attempt == 0:
+                time.sleep(0.3)
+                continue
+            raise
+    raise last_error
+
+
+def fetch_point(lat, lon, force=False):
+    cache_name = f"weather-point-{lat:.4f}_{lon:.4f}.json"
+    if not force:
+        cached = read_cache(cache_name, POINT_CACHE_SECONDS)
+        if isinstance(cached, dict) and cached.get("forecast"):
+            return cached
+    data = api_get(f"https://api.weather.gov/points/{lat:.4f},{lon:.4f}")
+    props = data.get("properties") if isinstance(data, dict) else None
+    if not isinstance(props, dict) or not props.get("forecast"):
+        raise ValueError("weather.gov returned no forecast grid for those coordinates.")
+    rel = (props.get("relativeLocation") or {}).get("properties") or {}
+    city = str(rel.get("city") or "").strip()
+    state = str(rel.get("state") or "").strip()
+    location = f"{city}, {state}" if city and state else (city or state or f"{lat:.2f}, {lon:.2f}")
+    point = {
+        "location": location,
+        "forecast": str(props["forecast"]),
+        "hourly": str(props.get("forecastHourly") or ""),
+    }
+    write_cache(cache_name, point)
+    return point
+
+
+# ── forecast shaping ──────────────────────────────────────────────────────
+
+def parse_iso(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def short_day_label(name, start_time, is_first, is_daytime):
+    raw = str(name or "").strip()
+    low = raw.lower()
+    if is_first:
+        if not is_daytime:
+            return "Overnight" if "overnight" in low else "Tonight"
+        return "Today"
+    if low in WEEKDAYS:
+        return WEEKDAYS[low]
+    # NWS uses federal holiday names (e.g. "Thanksgiving Day"); derive the
+    # 3-letter weekday from startTime so the 5-day column stays aligned.
+    parsed = parse_iso(start_time)
+    if parsed is not None:
+        return parsed.strftime("%a")
+    return raw[:3] if raw else "Day"
+
+
+def normalize_period(period, units):
+    is_day = bool(period.get("isDaytime", True))
+    short = str(period.get("shortForecast") or "").strip()
+    return {
+        "name": str(period.get("name") or "").strip(),
+        "isDaytime": is_day,
+        "temp": convert_temp(period.get("temperature"), period.get("temperatureUnit", "F"), units),
+        "precip": quantity_int(period.get("probabilityOfPrecipitation")),
+        "humidity": quantity_int(period.get("relativeHumidity")),
+        "wind": format_wind(period.get("windDirection"), period.get("windSpeed")),
+        "short": short,
+        "detail": str(period.get("detailedForecast") or "").strip(),
+        "condition": classify_condition(short, period.get("icon"), is_day),
+        "startTime": str(period.get("startTime") or ""),
+        "endTime": str(period.get("endTime") or ""),
+    }
+
+
+def group_days(periods, days_count, units):
+    norm = [normalize_period(p, units) for p in periods if isinstance(p, dict)]
+    days = []
+    idx = 0
+    while idx < len(norm) and len(days) < days_count:
+        first = norm[idx]
+        if first["isDaytime"]:
+            day_p = first
+            if idx + 1 < len(norm) and not norm[idx + 1]["isDaytime"]:
+                night_p = norm[idx + 1]
+                idx += 2
+            else:
+                night_p = None
+                idx += 1
+        else:
+            day_p = None
+            night_p = first
+            idx += 1
+
+        primary = day_p or night_p
+        precips = [p["precip"] for p in (day_p, night_p) if p and p["precip"] is not None]
+        days.append({
+            "label": short_day_label(primary["name"], primary["startTime"], len(days) == 0, bool(day_p)),
+            "fullLabel": primary["name"],
+            "high": day_p["temp"] if day_p else None,
+            "low": night_p["temp"] if night_p else None,
+            "condition": primary["condition"],
+            "short": primary["short"],
+            "precip": max(precips) if precips else None,
+            "wind": primary["wind"],
+            "day": _period_public(day_p) if day_p else None,
+            "night": _period_public(night_p) if night_p else None,
+        })
+    return days
+
+
+def _period_public(period):
+    return {
+        "name": period["name"],
+        "temp": period["temp"],
+        "precip": period["precip"],
+        "wind": period["wind"],
+        "short": period["short"],
+        "detail": period["detail"],
+        "condition": period["condition"],
+    }
+
+
+def pick_current_hourly(hourly_periods, now=None):
+    if not isinstance(hourly_periods, list) or not hourly_periods:
+        return None
+    now = now or dt.datetime.now(dt.timezone.utc)
+    for period in hourly_periods:
+        if not isinstance(period, dict):
+            continue
+        end = parse_iso(period.get("endTime"))
+        if end is None or end > now:
+            return period
+    return hourly_periods[0] if isinstance(hourly_periods[0], dict) else None
+
+
+def build_current(hourly_periods, forecast_periods, days, units, now=None):
+    chosen = pick_current_hourly(hourly_periods, now=now)
+    if chosen is None:
+        chosen = forecast_periods[0] if forecast_periods else None
+    if not isinstance(chosen, dict):
+        return None
+    norm = normalize_period(chosen, units)
+    first_day = days[0] if days else {}
+    return {
+        "temp": norm["temp"],
+        "condition": norm["condition"],
+        "short": norm["short"],
+        "wind": norm["wind"],
+        "humidity": norm["humidity"],
+        "precip": norm["precip"],
+        "isDaytime": norm["isDaytime"],
+        "high": first_day.get("high"),
+        "low": first_day.get("low"),
+    }
+
+
+def parse_alerts(alerts_json):
+    features = alerts_json.get("features") if isinstance(alerts_json, dict) else None
+    if not isinstance(features, list):
+        return []
+    seen = set()
+    out = []
+    for item in features:
+        props = item.get("properties") if isinstance(item, dict) else None
+        if not isinstance(props, dict):
+            continue
+        event = str(props.get("event") or "").strip()
+        if not event or event in seen:
+            continue
+        seen.add(event)
+        out.append({
+            "event": event,
+            "severity": str(props.get("severity") or "").strip(),
+            "headline": str(props.get("headline") or "").strip(),
+        })
+        if len(out) >= 2:
+            break
+    return out
+
+
+def fetch_forecast(lat, lon, days_count=DEFAULT_DAYS, units=DEFAULT_UNITS, force=False, now=None):
+    days_count = max(1, min(7, int(days_count)))
+    units = "C" if str(units or "F").upper() == "C" else "F"
+    key = hashlib.sha1(f"{lat:.4f},{lon:.4f},{days_count},{units}".encode()).hexdigest()[:12]
+    cache_name = f"weather-{key}.json"
+
+    if not force:
+        cached = read_cache(cache_name, FORECAST_CACHE_SECONDS)
+        if isinstance(cached, dict) and cached.get("ok"):
+            return cached
+
+    try:
+        point = fetch_point(lat, lon, force=force)
+        alerts_url = f"https://api.weather.gov/alerts/active?point={lat:.4f},{lon:.4f}"
+
+        def optional_get(url):
+            if not url:
+                return None
+            try:
+                return api_get(url)
+            except (urllib.error.URLError, OSError, ValueError):
+                return None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            f_forecast = pool.submit(api_get, point["forecast"])
+            f_hourly = pool.submit(optional_get, point.get("hourly"))
+            f_alerts = pool.submit(optional_get, alerts_url)
+            forecast_json = f_forecast.result()
+            hourly_json = f_hourly.result()
+            alerts_json = f_alerts.result()
+
+        forecast_periods = (forecast_json.get("properties") or {}).get("periods") or []
+        if not forecast_periods:
+            raise ValueError("weather.gov returned an empty forecast.")
+        hourly_periods = ((hourly_json or {}).get("properties") or {}).get("periods") or []
+
+        days = group_days(forecast_periods, days_count, units)
+        current = build_current(hourly_periods, forecast_periods, days, units, now=now)
+        alerts = parse_alerts(alerts_json)
+        timestamp = (now or dt.datetime.now().astimezone()).isoformat(timespec="minutes")
+
+        payload = {
+            "ok": True,
+            "stale": False,
+            "error": "",
+            "location": point["location"],
+            "lat": lat,
+            "lon": lon,
+            "unit": units,
+            "updated": timestamp,
+            "current": current,
+            "days": days,
+            "alerts": alerts,
+        }
+        write_cache(cache_name, payload)
+        return payload
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        if isinstance(error, urllib.error.HTTPError):
+            if error.code == 404:
+                reason = "weather.gov only covers US locations."
+            else:
+                reason = f"weather.gov returned an error ({error.code})."
+        elif isinstance(error, ValueError):
+            reason = str(error)
+        else:
+            reason = "Couldn't reach weather.gov."
+
+        stale = read_cache(cache_name)
+        if isinstance(stale, dict) and stale.get("ok"):
+            out = dict(stale)
+            out["stale"] = True
+            out["error"] = f"{reason} Showing saved forecast."
+            return out
+        return {
+            "ok": False,
+            "stale": False,
+            "error": reason,
+            "location": f"{lat:.2f}, {lon:.2f}",
+            "lat": lat,
+            "lon": lon,
+            "unit": units,
+            "updated": "",
+            "current": None,
+            "days": [],
+            "alerts": [],
+        }
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Fetch a 5-day forecast from weather.gov as JSON.")
+    parser.add_argument("--lat", type=float, default=None)
+    parser.add_argument("--lon", type=float, default=None)
+    parser.add_argument("--url", default="")
+    parser.add_argument("--days", type=int, default=DEFAULT_DAYS)
+    parser.add_argument("--units", default=DEFAULT_UNITS)
+    parser.add_argument("--force", action="store_true")
+    args = parser.parse_args(argv)
+
+    try:
+        lat, lon = resolve_coords(lat=args.lat, lon=args.lon, url=args.url)
+    except ValueError as error:
+        print(json.dumps({
+            "ok": False,
+            "stale": False,
+            "error": str(error),
+            "location": "",
+            "lat": None,
+            "lon": None,
+            "unit": "C" if str(args.units).upper() == "C" else "F",
+            "updated": "",
+            "current": None,
+            "days": [],
+            "alerts": [],
+        }))
+        return 0
+
+    result = fetch_forecast(lat, lon, days_count=args.days, units=args.units, force=args.force)
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
