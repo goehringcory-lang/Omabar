@@ -32,6 +32,20 @@ Item {
   property var playlists: []
   property bool connected: true
   property bool loading: false
+  property string error: ""
+
+  // Pinned playlists first, then the account's, without repeating one that is both.
+  readonly property var rows: {
+    var seen = ({}), out = []
+    var all = menu.pinned.concat(menu.playlists)
+    for (var i = 0; i < all.length; i++) {
+      var item = all[i]
+      if (!item || !item.uri || seen[item.uri]) continue
+      seen[item.uri] = true
+      out.push(item)
+    }
+    return out
+  }
 
   function refresh() {
     if (!player || loader.running) return
@@ -57,9 +71,11 @@ Item {
         try {
           var data = JSON.parse(text)
           menu.connected = data.connected === true
+          menu.error = String(data.error || "")
           menu.playlists = Array.isArray(data.playlists) ? data.playlists : []
         } catch (e) {
-          menu.connected = false
+          // The helper said nothing readable: keep what is already listed.
+          menu.error = "Couldn't load your playlists."
         }
       }
     }
@@ -124,7 +140,8 @@ Item {
           clip: true
           spacing: Style.space(2)
           boundsBehavior: Flickable.StopAtBounds
-          model: menu.pinned.concat(menu.playlists)
+          visible: count > 0
+          model: menu.rows
 
           delegate: PlaylistRow {
             required property var modelData
@@ -145,10 +162,23 @@ Item {
           font.pixelSize: Style.font.bodySmall
         }
 
+        Text {
+          visible: !menu.loading && menu.error !== ""
+          width: parent.width
+          wrapMode: Text.WordWrap
+          maximumLineCount: 3
+          elide: Text.ElideRight
+          text: menu.error
+          color: menu.ink
+          opacity: 0.55
+          font.family: menu.fontName
+          font.pixelSize: Style.font.caption
+        }
+
         PlaylistRow {
           visible: !menu.connected && !menu.loading
           width: parent.width
-          name: "Connect Spotify"
+          name: menu.playlists.length > 0 || menu.error !== "" ? "Reconnect Spotify" : "Connect Spotify"
           detail: "Show every playlist on your account here"
           icon: "\u{F04C7}"
           onPicked: menu.runInTerminal([menu.player.helper, "login"])
@@ -189,6 +219,8 @@ Item {
         font.pixelSize: Style.font.iconLarge
       }
       Text {
+        width: pick.width - Style.space(24)
+        elide: Text.ElideRight
         text: pick.label
         color: pick.fg
         font.family: menu.fontName
@@ -269,6 +301,7 @@ Item {
       Text {
         width: parent.width
         text: row.name
+        textFormat: Text.PlainText   // names come from other people's playlists
         elide: Text.ElideRight
         color: menu.ink
         font.family: menu.fontName
@@ -278,6 +311,7 @@ Item {
         width: parent.width
         visible: row.detail !== ""
         text: row.detail
+        textFormat: Text.PlainText
         elide: Text.ElideRight
         color: menu.ink
         opacity: 0.5

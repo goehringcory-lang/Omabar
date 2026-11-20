@@ -126,15 +126,20 @@ Item {
     Component.onCompleted: ready = true
 
     onValueChanged: {
-      if (!ready || Style.reduceMotion) {
+      if (!ready || Style.reduceMotion || !visible) {
+        flip.stop()
         shownTop = shownBottom = oldValue = value
         return
       }
+      // Interrupted mid-flip: carry on from the character that was landing,
+      // not the one from two changes ago.
+      var from = flip.running ? shownTop : oldValue
       flip.stop()
-      shownBottom = oldValue
-      fallingTop.text = oldValue
+      shownBottom = from
+      fallingTop.text = from
       risingBottom.text = value
       shownTop = value
+      oldValue = value
       flip.start()
     }
 
@@ -177,7 +182,7 @@ Item {
       PauseAnimation { duration: flap.delay }
       NumberAnimation { target: fallScale; property: "yScale"; to: 0; duration: 120; easing.type: Easing.InQuad }
       NumberAnimation { target: riseScale; property: "yScale"; to: 1; duration: 140; easing.type: Easing.OutBounce }
-      ScriptAction { script: { flap.shownBottom = flap.value; flap.oldValue = flap.value } }
+      ScriptAction { script: { flap.shownBottom = flap.value } }
     }
   }
 }
