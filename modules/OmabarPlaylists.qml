@@ -1,5 +1,5 @@
-// The Omabar player's playlist menu: one-click Lofi Beats and Discover Weekly,
-// your pinned playlists, then every playlist on your Spotify account.
+// The Omabar player's playlist menu: one-click Lofi Beats, Discover Weekly and
+// shuffled Liked Songs, your pinned playlists, then every playlist on your Spotify account.
 import QtQuick
 import QtQuick.Effects
 import Quickshell
@@ -24,6 +24,7 @@ Item {
 
   readonly property string lofiUri: String(player ? player.setting("lofi", "spotify:playlist:0vvXsWCC9xrXsKd4FyS8kM") : "")
   readonly property string discoverUri: String(player ? player.setting("discoverWeekly", "") : "")
+  readonly property bool shuffleLiked: player ? player.setting("shuffleLiked", true) !== false : true
   readonly property var pinned: {
     var list = player ? player.setting("playlists", []) : []
     return Array.isArray(list) ? list : []
@@ -90,7 +91,7 @@ Item {
     bar: menu.bar
     owner: menu.player
     open: menu.open
-    contentWidth: popup.fittedContentWidth(Style.space(300))
+    contentWidth: popup.fittedContentWidth(Style.space(340))
     contentHeight: popup.fittedContentHeight(column.implicitHeight)
 
       Column {
@@ -103,21 +104,33 @@ Item {
           width: parent.width
           spacing: Style.space(8)
 
+          id: picks
+          readonly property real tile: Math.floor((width - spacing * 2) / 3)
+
           QuickPick {
-            width: (parent.width - parent.spacing) / 2
+            width: picks.tile
             icon: "\u{F0176}"
             label: "Lofi Beats"
             filled: true
             onPicked: menu.player.play(menu.lofiUri)
           }
           QuickPick {
-            width: (parent.width - parent.spacing) / 2
+            width: picks.tile
             icon: "\u{F018B}"
-            label: menu.discoverUri ? "Discover Weekly" : "Add Discover Weekly"
+            label: "Discover Weekly"
+            // A plus until your own Discover Weekly link is saved.
+            badge: menu.discoverUri ? "" : "\u{F0415}"
             onPicked: {
               if (menu.discoverUri) menu.player.play(menu.discoverUri)
               else menu.runInTerminal([menu.player.helper, "set-discover-weekly"])
             }
+          }
+          QuickPick {
+            width: picks.tile
+            icon: "\u{F02D1}"
+            label: "Liked Songs"
+            badge: menu.shuffleLiked ? "\u{F049D}" : ""
+            onPicked: menu.player.playLiked()
           }
         }
 
@@ -192,9 +205,11 @@ Item {
     property string icon: ""
     property string label: ""
     property bool filled: false
+    // A small glyph in the corner that says what a click does.
+    property string badge: ""
     signal picked()
 
-    height: Style.space(52)
+    height: Style.space(68)
     radius: Style.space(14)
     readonly property color accent: Commons.Color.accent
     color: filled
@@ -220,13 +235,40 @@ Item {
       }
       Text {
         width: pick.width - Style.space(24)
+        height: lineHeightProbe.implicitHeight * 2
+        verticalAlignment: Text.AlignTop
+        wrapMode: Text.WordWrap
+        maximumLineCount: 2
         elide: Text.ElideRight
+        textFormat: Text.PlainText
         text: pick.label
         color: pick.fg
         font.family: menu.fontName
         font.pixelSize: Style.font.bodySmall
         font.weight: Font.DemiBold
       }
+    }
+
+    // One line of the label's font, so every tile leaves room for two.
+    Text {
+      id: lineHeightProbe
+      visible: false
+      text: "X"
+      font.family: menu.fontName
+      font.pixelSize: Style.font.bodySmall
+      font.weight: Font.DemiBold
+    }
+    Text {
+      visible: pick.badge !== ""
+      anchors.top: parent.top
+      anchors.right: parent.right
+      anchors.topMargin: Style.space(10)
+      anchors.rightMargin: Style.space(10)
+      text: pick.badge
+      color: pick.fg
+      opacity: 0.6
+      font.family: menu.fontName
+      font.pixelSize: Style.font.iconSmall
     }
 
     HoverHandler { id: pickHover; cursorShape: Qt.PointingHandCursor }

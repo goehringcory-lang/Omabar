@@ -141,5 +141,68 @@ class Playlists(unittest.TestCase):
         self.assertEqual(self.answer(self.page)["connected"], False)
 
 
+class LikedSongs(unittest.TestCase):
+    """cmd_liked against a stand-in Spotify."""
+
+    def setUp(self):
+        self.sp = sp = load()
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        sp.CACHE_DIR = self.dir.name
+        sp.time.sleep = lambda seconds: None
+        self.status, self.track, self.sent, self.told = "Paused", "a", [], []
+        self.plays = set()          # the URIs this Spotify actually starts
+        sp.ensure_running = lambda: False
+        sp.spotify_running = lambda: True
+        sp.playback_status = lambda: self.status
+        sp.track_id = lambda: self.track
+        sp.set_shuffle = lambda on: self.sent.append(("shuffle", on)) or True
+        sp.notify = self.told.append
+        sp.web_play_liked = lambda shuffle: False
+
+        def open_uri(uri):
+            self.sent.append(uri)
+            if uri in self.plays:
+                self.status, self.track = "Playing", "liked"
+            return True
+        sp.open_uri = open_uri
+
+    def test_shuffle_goes_on_before_the_songs_start(self):
+        self.plays = {"spotify:collection:tracks"}
+        self.assertEqual(self.sp.cmd_liked(), 0)
+        self.assertEqual(self.sent, [("shuffle", True), "spotify:collection:tracks"])
+        self.assertEqual(self.told, [])
+
+    def test_no_shuffle(self):
+        self.plays = {"spotify:collection:tracks"}
+        self.assertEqual(self.sp.cmd_liked(shuffle=False), 0)
+        self.assertEqual(self.sent, ["spotify:collection:tracks"])
+
+    def test_tries_the_other_name(self):
+        self.plays = {"spotify:collection"}
+        self.assertEqual(self.sp.cmd_liked(), 0)
+        self.assertEqual(self.sent[1:], ["spotify:collection:tracks", "spotify:collection"])
+
+    def test_a_song_that_was_already_playing_does_not_count(self):
+        self.status = "Playing"     # Spotify only shows the page and keeps playing
+        self.assertEqual(self.sp.cmd_liked(), 1)
+        self.assertEqual(len(self.told), 1)
+
+    def test_falls_back_to_the_web_api(self):
+        self.sp.web_play_liked = lambda shuffle: True
+        self.assertEqual(self.sp.cmd_liked(), 0)
+        self.assertEqual(self.told, [])
+
+    def test_web_api_needs_a_login_with_playback_access(self):
+        sp = load()
+        sp.TOKEN_FILE = os.path.join(self.dir.name, "token")
+        sp.APP_FILE = os.path.join(self.dir.name, "app")
+        sp.write_private(sp.APP_FILE, {"client_id": "a" * 32})
+        sp.write_private(sp.TOKEN_FILE, {"access_token": "t", "refresh_token": "r", "expires_at": time.time() + 999,
+                                         "scope": "playlist-read-private"})
+        sp.api_request = lambda *a, **k: self.fail("must not call Spotify without playback access")
+        self.assertFalse(sp.web_play_liked(True))
+
+
 if __name__ == "__main__":
     unittest.main()

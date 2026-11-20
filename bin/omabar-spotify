@@ -3,6 +3,8 @@
 
     omabar-spotify play <spotify uri or open.spotify.com link>
         Start Spotify if needed and play that playlist, album or track.
+    omabar-spotify liked [--no-shuffle]
+        Start Spotify if needed, turn shuffle on and play your Liked Songs.
     omabar-spotify playlists
         Print your playlists as JSON (needs a one-time `login`).
     omabar-spotify login
@@ -43,7 +45,10 @@ CACHE_SECONDS = 600
 
 REDIRECT_PORT = 8898
 REDIRECT_URI = f"http://127.0.0.1:{REDIRECT_PORT}/callback"
-SCOPES = "playlist-read-private playlist-read-collaborative"
+# The playback scopes are only used to start Liked Songs when Spotify's own
+# MPRIS interface won't (see cmd_liked).
+PLAY_SCOPE = "user-modify-playback-state"
+SCOPES = f"playlist-read-private playlist-read-collaborative user-read-playback-state {PLAY_SCOPE}"
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
@@ -132,25 +137,44 @@ def api_request(url, data=None, headers=None):
 
 # ── play ──────────────────────────────────────────────────────────────────
 
-def cmd_play(target):
-    uri = to_uri(target)
-    # One at a time: a second click while Spotify is still starting would
-    # otherwise queue a second launch and a second request.
+def single_play():
+    """Hold the play lock, or None when another play is already under way: a
+    second click while Spotify is still starting would otherwise queue a
+    second launch and a second request."""
     os.makedirs(CACHE_DIR, exist_ok=True)
     lock = open(os.path.join(CACHE_DIR, "play.lock"), "w")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        return 0
+        return None
+    return lock
 
-    if not spotify_running() and shutil.which("spotify") and shutil.which("omarchy-launch-spotify"):
-        subprocess.Popen(["omarchy-launch-spotify"], start_new_session=True,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        for _ in range(60):
-            time.sleep(0.5)
-            if spotify_running():
-                time.sleep(1.5)  # on the bus a moment before it takes requests
-                break
+
+def ensure_running():
+    """Start the desktop app when it isn't up. True when it was just started."""
+    if spotify_running() or not (shutil.which("spotify") and shutil.which("omarchy-launch-spotify")):
+        return False
+    subprocess.Popen(["omarchy-launch-spotify"], start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(60):
+        time.sleep(0.5)
+        if spotify_running():
+            time.sleep(1.5)  # on the bus a moment before it takes requests
+            return True
+    return False
+
+
+def open_web(url):
+    subprocess.Popen(["xdg-open", url], start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def cmd_play(target):
+    uri = to_uri(target)
+    lock = single_play()
+    if lock is None:
+        return 0
+    ensure_running()
     if spotify_running():
         # A Spotify that is still signing in, or restarting, can accept the
         # request and drop it. Ask again until it is actually playing.
@@ -161,9 +185,99 @@ def cmd_play(target):
                 return 0
         return 0 if sent else 1
     # No desktop app (or it never came up): open the page instead.
-    subprocess.Popen(["xdg-open", to_web(uri)], start_new_session=True,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    open_web(to_web(uri))
     return 0
+
+
+# ── liked songs ───────────────────────────────────────────────────────────
+
+# Liked Songs isn't a playlist and has no link to share. These are the names
+# Spotify's desktop app knows it by.
+LIKED_URIS = ["spotify:collection:tracks", "spotify:collection"]
+LIKED_WEB = "https://open.spotify.com/collection/tracks"
+
+
+def track_id():
+    result = busctl("get-property", MPRIS_NAME, MPRIS_PATH, MPRIS_PLAYER, "Metadata")
+    if result is None or result.returncode != 0:
+        return ""
+    match = re.search(r'"mpris:trackid" \w "([^"]*)"', result.stdout)
+    return match.group(1) if match else ""
+
+
+def set_shuffle(on):
+    result = busctl("set-property", MPRIS_NAME, MPRIS_PATH, MPRIS_PLAYER, "Shuffle", "b", "true" if on else "false")
+    return result is not None and result.returncode == 0
+
+
+def notify(text):
+    try:
+        subprocess.run(["notify-send", "-a", "Omabar", "Spotify", text], capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def api_send(method, url, token, body=None):
+    """A Web API call with no answer to read. True when Spotify accepted it."""
+    request = urllib.request.Request(url, method=method, data=json.dumps(body).encode() if body is not None else b"",
+                                     headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return 200 <= response.status < 300
+
+
+def web_play_liked(shuffle):
+    """Start Liked Songs through the Web API (Spotify Premium, and a login made
+    since Omabar began asking for playback access). False when it can't."""
+    try:
+        token = access_token()
+        if not token or PLAY_SCOPE not in str((read_json(TOKEN_FILE) or {}).get("scope", "")):
+            return False
+        auth = {"Authorization": f"Bearer {token}"}
+        user = api_request("https://api.spotify.com/v1/me", headers=auth).get("id")
+        devices = api_request("https://api.spotify.com/v1/me/player/devices", headers=auth).get("devices") or []
+        here = [d for d in devices if d.get("type") == "Computer" and d.get("id")] or [d for d in devices if d.get("id")]
+        if not user or not here:
+            return False
+        device = urllib.parse.quote(here[0]["id"])
+        if shuffle:
+            try:
+                api_send("PUT", f"https://api.spotify.com/v1/me/player/shuffle?state=true&device_id={device}", token)
+            except (urllib.error.URLError, OSError):
+                pass
+        return api_send("PUT", f"https://api.spotify.com/v1/me/player/play?device_id={device}", token,
+                        {"context_uri": f"spotify:user:{user}:collection"})
+    except (NeedsLogin, urllib.error.URLError, OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
+def cmd_liked(shuffle=True):
+    lock = single_play()
+    if lock is None:
+        return 0
+    fresh = ensure_running()
+    if not spotify_running():
+        open_web(LIKED_WEB)
+        return 0
+    was_playing, was_track = playback_status() == "Playing", track_id()
+
+    def started():
+        # Spotify may only show the Liked Songs page. It has started them when
+        # it is playing and, if it already was, has moved to another song.
+        return playback_status() == "Playing" and not (was_playing and track_id() == was_track)
+
+    if shuffle:
+        set_shuffle(True)
+    # A just-started Spotify can drop the first request, so ask it twice.
+    for uri in ([LIKED_URIS[0]] if fresh else []) + LIKED_URIS:
+        if open_uri(uri):
+            time.sleep(2.5)
+            if started():
+                return 0
+    if web_play_liked(shuffle):
+        return 0
+    notify("Liked Songs is open, but Spotify didn't start it from the bar. Press play there. "
+           "If you have Premium, running omabar-spotify login once more lets Omabar start it for you.")
+    return 1
 
 
 # ── auth ──────────────────────────────────────────────────────────────────
@@ -391,6 +505,8 @@ def main(argv):
     command = argv[1]
     if command == "play" and len(argv) == 3:
         return cmd_play(argv[2])
+    if command == "liked":
+        return cmd_liked(shuffle="--no-shuffle" not in argv[2:])
     if command == "playlists":
         return cmd_playlists()
     if command == "login":

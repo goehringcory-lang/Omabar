@@ -15,6 +15,7 @@
 //   maxWidth       - widest the track text may grow, in px (default 220)
 //   lofi           - link or URI behind the Lofi Beats button (default: Cory's Lofi Beats playlist)
 //   discoverWeekly - your Discover Weekly link (it's different for every account)
+//   shuffleLiked   - turn shuffle on when the Liked Songs button starts them (default true)
 //   playlists      - extra pinned playlists: [{ "name": "…", "uri": "…" }]
 //   showIdle       - keep the small disc and chevron while Spotify is closed (default true)
 //   bulge          - swell out of the bar while a track is loaded (default true)
@@ -155,6 +156,11 @@ Item {
 
   function play(uri) {
     if (bar && uri) bar.run(Util.shellQuote(root.helper) + " play " + Util.shellQuote(uri))
+    root.menuOpen = false
+  }
+
+  function playLiked() {
+    if (bar) bar.run(Util.shellQuote(root.helper) + " liked" + (setting("shuffleLiked", true) !== false ? "" : " --no-shuffle"))
     root.menuOpen = false
   }
 
