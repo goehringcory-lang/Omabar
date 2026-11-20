@@ -27,7 +27,9 @@ omarchy plugin add https://github.com/goehringcory-lang/Omabar.git
 ~/.config/omarchy/plugins/goehringcory.omabar/bin/omabar-setup
 ```
 
-`omabar-setup` builds the bar from the Omarchy you have installed, backs up `~/.config/omarchy/shell.json` the first time it runs, switches the shell to Omabar, lays out the widgets above, and sets the bar to glassy so Hyprland blurs what's behind it. Setup reads which plugins you have installed and places each plugin's widget exactly once: ai-usagebar beside the agents icon, Omaplug beside the clock, and every other plugin widget in the drawer panel. Nothing from your old layout is carried over, so nothing doubles up. Run it again after installing a companion plugin to add it to the bar, and after an Omarchy update so the bar matches the new shell.
+`omabar-setup` builds the bar from the Omarchy you have installed, backs up `~/.config/omarchy/shell.json` the first time it runs, switches the shell to Omabar, lays out the widgets above, and sets the bar to glassy so Hyprland blurs what's behind it. Setup reads which plugins you have installed and places each plugin's widget exactly once: ai-usagebar beside the agents icon, Omaplug beside the clock, and every other plugin widget in the drawer panel. No widget from your old layout is carried over, so nothing doubles up. Run it again after installing a companion plugin to add it to the bar. Settings you put on Omabar's widgets with `omarchy bar set` are kept when you do.
+
+After an Omarchy update the bar has to be rebuilt from the new shell's own. Setup installs a small hook (`~/.config/omarchy/hooks/post-update.d/omabar-rebuild`) so `omarchy update` does that for you; `omabar-setup --rebuild` does the same by hand and leaves your layout alone.
 
 Setup checks that the shell actually loaded Omabar. If it didn't, it prints what the shell logged instead of leaving you with the built-in bar and no explanation.
 
@@ -69,6 +71,8 @@ The mail button turns the accent color while any inbox in Thunderbird, across al
 ~/.config/omarchy/plugins/goehringcory.omabar/bin/omabar-setup --restore   # your old layout
 omarchy bar reset                                                          # or just the built-in bar
 ```
+
+Restore before removing the plugin, since the script goes with it. It puts back the layout from before setup and removes the update hook. Setting Omabar up again later backs up whatever layout you have then.
 
 ## Customize
 

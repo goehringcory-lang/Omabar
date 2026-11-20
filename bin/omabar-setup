@@ -2,7 +2,8 @@
 # Switch the Omarchy shell to Omabar and lay out its widgets.
 #
 #   omabar-setup            use Omabar with its layout (backs up shell.json first)
-#   omabar-setup --restore  put back the shell.json from before the first setup
+#   omabar-setup --restore  put back the shell.json from before setup
+#   omabar-setup --rebuild  rebuild the bar after an Omarchy update, layout untouched
 #   omabar-setup --doctor   print what is installed and what the shell logged
 #
 # Layout
@@ -27,16 +28,43 @@ export OMARCHY_PATH
 DEFAULTS_FILE="$OMARCHY_PATH/config/omarchy/shell.json"
 ENGINE_DIR="$PLUGIN_DIR/engine"
 BACKUP_FILE="$HOME/.config/omarchy/shell.json.before-omabar"
+# Omarchy runs this after `omarchy update`; it rebuilds the bar for the new shell.
+HOOK_FILE="$HOME/.config/omarchy/hooks/post-update.d/omabar-rebuild"
 
 fail() {
   echo "omabar-setup: $*" >&2
   exit 1
 }
 
+usage() {
+  sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+case ${1:-} in
+"" | --restore | --rebuild | --doctor) ;;
+-h | --help)
+  usage
+  exit 0
+  ;;
+*)
+  usage >&2
+  fail "unknown option: $1"
+  ;;
+esac
+(($# <= 1)) || fail "takes one option at most"
+
+# Whatever is half-made when the script stops, however it stops.
+scratch=()
+cleanup() {
+  ((${#scratch[@]} == 0)) || rm -rf "${scratch[@]}"
+}
+trap cleanup EXIT
+
 reload_shell() {
   # Quickshell serves plugin QML from what it read when it started, so a
   # rebuilt engine only takes effect after a full restart; reloading plugins
   # in place keeps showing the old file.
+  echo "Restarting the Omarchy shell..."
   if command -v omarchy-restart-shell >/dev/null && omarchy-restart-shell >/dev/null 2>&1; then
     local _
     for _ in $(seq 1 60); do
@@ -65,17 +93,94 @@ omabar_active() {
 # Omarchy installed here so it matches this shell; fall back to the copy made
 # from Omarchy 4.5.0 if this Omarchy's bar has moved on from the edits.
 build_engine() {
-  local source_dir="$OMARCHY_PATH/shell/plugins/bar" staged
+  local source_dir="$OMARCHY_PATH/shell/plugins/bar" staged stamp
+  stamp="$(engine_stamp) built"
   staged=$(mktemp -d "$PLUGIN_DIR/.engine.XXXXXX")
+  scratch+=("$staged")
   if [[ -f $source_dir/Bar.qml ]] && command -v python3 >/dev/null &&
     python3 "$PLUGIN_DIR/tools/omabar-patch.py" "$source_dir" "$staged" >/dev/null; then
     echo "Built the bar from your Omarchy ($(omarchy version 2>/dev/null || echo "version unknown"))"
   else
     echo "omabar-setup: could not build the bar from $source_dir; using the copy built for Omarchy 4.5.0" >&2
     cp "$PLUGIN_DIR/prebuilt/OmabarEngine.qml" "$PLUGIN_DIR/prebuilt/BarModel.js" "$staged/"
+    stamp="$(engine_stamp) prebuilt"
   fi
+  echo "$stamp" >"$staged/.built-from"
   rm -rf "$ENGINE_DIR"
   mv "$staged" "$ENGINE_DIR"
+}
+
+# What an engine is built from: Omarchy's bar and Omabar's edits to it. When
+# either changes, the engine in place is stale.
+engine_stamp() {
+  cat "$OMARCHY_PATH/shell/plugins/bar/Bar.qml" "$OMARCHY_PATH/shell/plugins/bar/BarModel.js" \
+    "$PLUGIN_DIR/tools/omabar-patch.py" 2>/dev/null | sha256sum | cut -d' ' -f1
+}
+
+# The stamp also says whether the engine was built here or is the 4.5.0 copy,
+# used when the edits no longer fit. Either way it is the best there is for
+# this Omarchy until one of the two changes again.
+engine_current() {
+  [[ -f $ENGINE_DIR/OmabarEngine.qml && -f $ENGINE_DIR/.built-from &&
+    $(cut -d' ' -f1 "$ENGINE_DIR/.built-from") == "$(engine_stamp)" ]]
+}
+
+engine_state() {
+  if ! engine_current; then
+    echo "out of date, run: omabar-setup --rebuild"
+  elif grep -q ' prebuilt$' "$ENGINE_DIR/.built-from"; then
+    echo "the copy built for Omarchy 4.5.0 (Omabar's edits don't fit this Omarchy's bar, see patch check)"
+  else
+    echo "built from this Omarchy"
+  fi
+}
+
+# Whether shell.json names Omabar as the bar.
+omabar_selected() {
+  [[ $(jq -r '.bar.id // ""' "$CONFIG_FILE" 2>/dev/null) == "$PLUGIN_ID" ]]
+}
+
+# Ask the shell whether it took Omabar. When a bar fails to load the shell
+# quietly keeps the built-in one, so say so here instead.
+check_loaded() {
+  local started="$1" active="" _
+  if [[ $(omarchy-shell shell ping 2>/dev/null) != "ok" ]]; then
+    echo "Omabar is set up, but the Omarchy shell isn't answering, so it couldn't be checked. Start it with: omarchy restart shell"
+    return 0
+  fi
+  # A shell that has only just started answers before it has found its
+  # plugins, and then has nothing to say about Omabar yet.
+  for _ in $(seq 1 20); do
+    active=$(omabar_active)
+    [[ -z $active ]] || break
+    sleep 0.5
+  done
+  # The shell reports a bar as active the moment it starts loading it, and
+  # only falls back once loading fails, so give it time and then check both
+  # what it reports and what it logged.
+  sleep 3
+  active=$(omabar_active)
+  if shell_log --since "$started" | grep -q -E "bar option $PLUGIN_ID failed to load"; then
+    active="false"
+  fi
+  case $active in
+  true)
+    echo "Omabar is on. Undo any time with: $PLUGIN_DIR/bin/omabar-setup --restore"
+    ;;
+  false)
+    {
+      echo "omabar-setup: the shell did not load Omabar and is showing the built-in bar instead."
+      echo "What the shell logged:"
+      shell_log --since "$started" | grep -i -E 'omabar|bar option|falling back|\.qml' | tail -n 40
+      echo "Send that, plus the output of: $PLUGIN_DIR/bin/omabar-setup --doctor"
+      echo "Your old layout: $PLUGIN_DIR/bin/omabar-setup --restore"
+    } >&2
+    return 1
+    ;;
+  *)
+    echo "Omabar is set up, but the shell didn't say whether it loaded. Check with: $PLUGIN_DIR/bin/omabar-setup --doctor"
+    ;;
+  esac
 }
 
 doctor() {
@@ -88,8 +193,13 @@ doctor() {
   echo "revision: $(git -C "$PLUGIN_DIR" log -1 --format='%h %s' 2>&1 || true)"
   echo "local changes: $(git -C "$PLUGIN_DIR" status --porcelain 2>&1 | tr '\n' ' ')"
   echo "engine: $(ls "$ENGINE_DIR" 2>&1 | tr '\n' ' ')"
+  echo "engine is: $(engine_state)"
+  echo "update hook: $([[ -f $HOOK_FILE ]] && echo installed || echo missing)"
   echo "validate: $(omarchy plugin validate "$PLUGIN_DIR" 2>&1 && echo ok)"
-  echo "patch check: $(python3 "$PLUGIN_DIR/tools/omabar-patch.py" "$OMARCHY_PATH/shell/plugins/bar" "$(mktemp -d)" 2>&1 | tr '\n' ' ')"
+  local check
+  check=$(mktemp -d)
+  scratch+=("$check")
+  echo "patch check: $(python3 "$PLUGIN_DIR/tools/omabar-patch.py" "$OMARCHY_PATH/shell/plugins/bar" "$check" 2>&1 | tr '\n' ' ')"
   echo "active in shell: $(omabar_active)"
   echo "== shell.json"
   jq -c '.bar | {id, position, background, layout: ((.layout // {}) | map_values(map(.id)))}' "$CONFIG_FILE" 2>&1 || true
@@ -100,11 +210,14 @@ doctor() {
 }
 
 if [[ ${1:-} == "--restore" ]]; then
-  [[ -f $BACKUP_FILE ]] || fail "no backup at $BACKUP_FILE"
-  cp "$BACKUP_FILE" "$CONFIG_FILE"
+  [[ -f $BACKUP_FILE ]] || fail "no backup at $BACKUP_FILE; for the built-in bar run: omarchy bar reset"
+  # The backup is used up by restoring it, so the next setup backs up the
+  # layout as it is then rather than keeping this one forever.
+  mv "$BACKUP_FILE" "$CONFIG_FILE"
+  rm -f "$HOOK_FILE"
   omarchy-shell -q shell reloadConfig >/dev/null 2>&1 || true
-  omarchy bar background "$(jq -r '.bar.background // "opaque"' "$CONFIG_FILE")" >/dev/null 2>&1 || true
-  echo "Restored your bar from $BACKUP_FILE"
+  omarchy bar background "$(jq -r '.bar.background // "opaque"' "$CONFIG_FILE" 2>/dev/null || echo opaque)" >/dev/null 2>&1 || true
+  echo "Restored your bar to how it was before Omabar"
   exit 0
 fi
 
@@ -118,17 +231,47 @@ command -v jq >/dev/null || fail "jq is required"
 
 [[ -f $DEFAULTS_FILE ]] || fail "Omarchy's shell isn't at $OMARCHY_PATH (no config/omarchy/shell.json there); Omabar needs Omarchy 4"
 
-mkdir -p "$(dirname "$CONFIG_FILE")" "${XDG_CACHE_HOME:-$HOME/.cache}/omabar"
-build_engine
-if [[ -s $CONFIG_FILE ]]; then
-  source_file="$CONFIG_FILE"
-else
-  source_file="$DEFAULTS_FILE"
+if [[ ${1:-} == "--rebuild" ]]; then
+  if ! omabar_selected; then
+    echo "Omabar isn't the bar in use, so there is nothing to rebuild."
+    exit 0
+  fi
+  if engine_current; then
+    echo "Omabar already matches this Omarchy."
+    exit 0
+  fi
+  started=$(date '+%Y-%m-%d %H:%M:%S')
+  build_engine
+  reload_shell
+  check_loaded "$started"
+  exit
 fi
 
-# Keep the very first backup, so running setup twice can still restore the original.
-if [[ ! -f $BACKUP_FILE ]]; then
-  cp "$source_file" "$BACKUP_FILE"
+mkdir -p "$(dirname "$CONFIG_FILE")" "${XDG_CACHE_HOME:-$HOME/.cache}/omabar"
+build_engine
+
+# The layout to start from: yours, or Omarchy's when you have none the shell
+# can read (it uses its own then, too).
+pick_source() {
+  if [[ -s $CONFIG_FILE ]] && jq -e 'type == "object"' "$CONFIG_FILE" >/dev/null 2>&1; then
+    source_file="$CONFIG_FILE"
+  else
+    source_file="$DEFAULTS_FILE"
+  fi
+}
+pick_source
+if [[ -s $CONFIG_FILE && $source_file != "$CONFIG_FILE" ]]; then
+  echo "omabar-setup: $CONFIG_FILE isn't a layout the shell can read, so this one starts from Omarchy's defaults" >&2
+fi
+
+# Back up the layout from before Omabar, once: a second setup must not replace
+# it with Omabar's own.
+if [[ ! -f $BACKUP_FILE ]] && ! omabar_selected; then
+  if [[ -s $CONFIG_FILE ]]; then
+    cp "$CONFIG_FILE" "$BACKUP_FILE"
+  else
+    cp "$DEFAULTS_FILE" "$BACKUP_FILE"
+  fi
   echo "Backed up your bar config to $BACKUP_FILE"
 fi
 
@@ -155,8 +298,21 @@ elsewhen_clone() {
 }
 elsewhen_id=$(elsewhen_clone || echo "omarchy.elsewhen")
 
-tmp=$(mktemp)
-trap 'rm -f "$tmp"' EXIT
+# World clock: keep Omarchy's Elsewhen, with split-flap times in the accent
+# color. Done before the shell restarts, so the restyled clock is what the new
+# shell reads. Cloning has the shell rewrite shell.json, so the layout below
+# starts from that.
+if [[ $elsewhen_id == "omarchy.elsewhen" ]]; then
+  omarchy plugin clone omarchy.elsewhen >/dev/null 2>&1 || true
+  elsewhen_id=$(elsewhen_clone || echo "omarchy.elsewhen")
+  pick_source
+fi
+if [[ $elsewhen_id != "omarchy.elsewhen" && -d $PLUGINS_DIR/$elsewhen_id ]]; then
+  python3 "$PLUGIN_DIR/tools/omabar-elsewhen-patch.py" "$PLUGINS_DIR/$elsewhen_id" "$PLUGIN_DIR/modules" || true
+fi
+
+tmp=$(mktemp "$CONFIG_FILE.XXXXXX")
+scratch+=("$tmp")
 
 jq -S \
   --arg bar "$PLUGIN_ID" \
@@ -230,53 +386,40 @@ jq -S \
           ]
       )
     }
-  # Nothing else is carried over from the old layout: leftovers (clones of the
+  # No widget is carried over from the old layout: leftovers (clones of the
   # built-in clock or workspaces, older custom modules) would double up with
   # the Omabar ones. The old layout is kept in the backup.
+  #
+  # Settings are: what you set on a widget that is still here (omarchy bar
+  # set omabar-clock twelveHour false, a pinned playlist) survives running
+  # setup again. Anything setup itself sets on a widget is set afresh.
+  | ($old | obj | .bar | obj | .layout | obj
+      | [ .[] | arrays | .[] | objects | select(.id | type == "string") ]
+      | map({ key: .id, value: del(.id, .type, .source, .exec, .interval, .text, .tooltip, .onClick, .onRightClick, .onMiddleClick) })
+      | from_entries) as $kept
+  | .bar.layout |= map_values(map(($kept[.id] // {}) + .))
 ' "$source_file" >"$tmp"
 
 [[ -s $tmp ]] || fail "could not write the new layout; your shell.json is unchanged"
 started=$(date '+%Y-%m-%d %H:%M:%S')
 mv "$tmp" "$CONFIG_FILE"
-trap - EXIT
+
+# After an Omarchy update the bar has to be rebuilt from the new shell's own;
+# this has Omarchy do it at the end of `omarchy update`.
+mkdir -p "$(dirname "$HOOK_FILE")"
+cat >"$HOOK_FILE" <<HOOK
+#!/bin/bash
+# Installed by omabar-setup; removed by omabar-setup --restore.
+# Rebuilds Omabar's bar when an Omarchy update has changed the shell's.
+setup="\$HOME/.config/omarchy/plugins/$PLUGIN_ID/bin/omabar-setup"
+[[ -x \$setup ]] && "\$setup" --rebuild
+exit 0
+HOOK
+
 reload_shell
 omarchy bar background glassy >/dev/null 2>&1 || true
 
-# World clock: keep Omarchy's Elsewhen, with split-flap times in the accent color.
-if [[ $elsewhen_id == "omarchy.elsewhen" ]]; then
-  omarchy plugin clone omarchy.elsewhen >/dev/null 2>&1 || true
-  elsewhen_id=$(elsewhen_clone || echo "")
-fi
-if [[ -n $elsewhen_id && -d $PLUGINS_DIR/$elsewhen_id ]]; then
-  python3 "$PLUGIN_DIR/tools/omabar-elsewhen-patch.py" "$PLUGINS_DIR/$elsewhen_id" "$PLUGIN_DIR/modules" || true
-  omarchy-shell -q shell rescanPlugins >/dev/null 2>&1 || true
-fi
-
-# Ask the shell whether it took Omabar. When a bar fails to load the shell
-# quietly keeps the built-in one, so say so here instead.
-if [[ $(omarchy-shell shell ping 2>/dev/null) != "ok" ]]; then
-  echo "Omabar is set up, but the Omarchy shell isn't answering, so it couldn't be checked. Start it with: omarchy restart shell"
-else
-  # The shell reports a bar as active the moment it starts loading it, and
-  # only falls back once loading fails, so give it time and then check both
-  # what it reports and what it logged.
-  sleep 3
-  active=$(omabar_active)
-  if shell_log --since "$started" | grep -q -E "bar option $PLUGIN_ID failed to load"; then
-    active="false"
-  fi
-  if [[ $active != "true" ]]; then
-    {
-      echo "omabar-setup: the shell did not load Omabar and is showing the built-in bar instead."
-      echo "What the shell logged:"
-      shell_log --since "$started" | grep -i -E 'omabar|bar option|falling back|\.qml' | tail -n 40
-      echo "Send that, plus the output of: $PLUGIN_DIR/bin/omabar-setup --doctor"
-      echo "Your old layout: $PLUGIN_DIR/bin/omabar-setup --restore"
-    } >&2
-    exit 1
-  fi
-  echo "Omabar is on. Undo any time with: $PLUGIN_DIR/bin/omabar-setup --restore"
-fi
+check_loaded "$started"
 has_plugin ai-usagebar || echo "Tip: add ai-usagebar for per-provider usage, then run this again: omarchy plugin add https://github.com/akitaonrails/ai-usagebar.git"
 has_plugin omaplug || echo "Tip: add Omaplug to manage plugins from the bar, then run this again: omarchy plugin add https://github.com/fross100/omaplug.git"
 has_plugin omaland || echo "Tip: add Omaland for a look-and-feel button, then run this again: omarchy plugin add https://github.com/bobby-nicholas/omaland.git"
