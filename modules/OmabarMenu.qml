@@ -30,7 +30,8 @@ Item {
     spread: 0
     color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, hover.hovered ? 0.65 : 0.4)
     scale: face.scale
-    Behavior on blur { NumberAnimation { duration: Style.duration(200) } }
+    Behavior on blur { NumberAnimation { duration: Style.duration(200); easing.type: Easing.OutCubic } }
+    Behavior on color { ColorAnimation { duration: Style.duration(200) } }
   }
 
   Rectangle {

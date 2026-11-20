@@ -171,8 +171,8 @@ Item {
       ? Qt.rgba(accent.r, accent.g, accent.b, pickHover.hovered ? 1.0 : 0.88)
       : Qt.rgba(menu.ink.r, menu.ink.g, menu.ink.b, pickHover.hovered ? 0.14 : 0.07)
     scale: pickTap.pressed ? 0.97 : 1.0
-    Behavior on color { ColorAnimation { duration: Style.duration(140) } }
-    Behavior on scale { NumberAnimation { duration: Style.duration(140) } }
+    Behavior on color { ColorAnimation { duration: Style.duration(120) } }
+    Behavior on scale { NumberAnimation { duration: Style.duration(140); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut } }
 
     readonly property bool lightFill: filled && (0.2126 * accent.r + 0.7152 * accent.g + 0.0722 * accent.b) > 0.5
     readonly property color fg: lightFill ? Qt.rgba(0.06, 0.06, 0.08, 0.92) : (filled ? "white" : menu.ink)
@@ -211,8 +211,8 @@ Item {
 
     height: Style.space(44)
     radius: Style.space(10)
-    color: Qt.rgba(menu.ink.r, menu.ink.g, menu.ink.b, rowHover.hovered ? 0.09 : 0.0)
-    Behavior on color { ColorAnimation { duration: Style.duration(120) } }
+    color: Qt.rgba(menu.ink.r, menu.ink.g, menu.ink.b, rowTap.pressed ? 0.16 : rowHover.hovered ? 0.10 : 0.0)
+    Behavior on color { ColorAnimation { duration: Style.duration(100) } }
 
     Item {
       id: thumb
@@ -243,7 +243,7 @@ Item {
         sourceSize: Qt.size(64, 64)
         fillMode: Image.PreserveAspectCrop
         asynchronous: true
-      mipmap: true
+        mipmap: true
         visible: false
         layer.enabled: true; layer.smooth: true
       }
@@ -287,6 +287,6 @@ Item {
     }
 
     HoverHandler { id: rowHover; cursorShape: Qt.PointingHandCursor }
-    TapHandler { onTapped: row.picked() }
+    TapHandler { id: rowTap; onTapped: row.picked() }
   }
 }

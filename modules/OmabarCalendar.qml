@@ -16,6 +16,7 @@ Item {
   property var bar
   property var owner          // the bar widget this drops from; it has close()
   property bool open: false
+  property bool twelveHour: true
   signal dismissed()
 
   readonly property string helper: String(Qt.resolvedUrl("../bin/omabar-gcal")).replace(/^file:\/\//, "")
@@ -78,6 +79,7 @@ Item {
         id: card
         anchors.fill: parent
         ink: root.ink
+        twelveHour: root.twelveHour
         fontName: root.bar && root.bar.fontFamily ? root.bar.fontFamily : "monospace"
 
         onMonthShown: function(year, month) {

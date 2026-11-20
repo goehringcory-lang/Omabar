@@ -104,6 +104,7 @@ Item {
     bar: root.bar
     owner: root
     open: root.calendarOpen
+    twelveHour: root.twelveHour
     onDismissed: root.calendarOpen = false
   }
 
