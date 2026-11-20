@@ -90,7 +90,7 @@ Item {
           root.run(["toggle", id], function() { root.refresh() })
         }
         onConnectRequested: {
-          if (root.bar) root.bar.run("omarchy-launch-floating-terminal-with-presentation " + Util.shellQuote(Util.shellQuote(root.helper) + " login"))
+          if (root.bar) root.bar.run("omarchy-launch-floating-terminal-with-presentation " + Util.shellQuote(Util.shellQuote(root.helper) + " connect"))
           root.dismissed()
         }
         onOpenEvent: function(link) {
