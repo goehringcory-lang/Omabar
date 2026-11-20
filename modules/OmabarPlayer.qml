@@ -138,13 +138,13 @@ Item {
       color: root.ink
       font.family: root.fontName
       font.pixelSize: glyph.size
-      opacity: !glyph.enabledAction ? 0.3 : (tap.pressed ? 0.55 : (hover.hovered ? 1.0 : 0.78))
-      scale: tap.pressed ? 0.88 : (hover.hovered ? 1.08 : 1.0)
+      opacity: !glyph.enabledAction ? 0.3 : (tap.held ? 0.55 : (hover.hovered ? 1.0 : 0.78))
+      scale: tap.held ? 0.88 : (hover.hovered ? 1.08 : 1.0)
       Behavior on scale { NumberAnimation { duration: Style.duration(160); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut } }
       Behavior on opacity { NumberAnimation { duration: Style.duration(140) } }
     }
     HoverHandler { id: hover; cursorShape: glyph.enabledAction ? Qt.PointingHandCursor : Qt.ArrowCursor }
-    TapHandler { id: tap; enabled: glyph.enabledAction; onTapped: glyph.clicked() }
+    OmabarClickTarget { id: tap; anchors.fill: parent; bar: root.bar; enabled: glyph.enabledAction; onPressed: glyph.clicked() }
   }
 
   component Disc: Item {
@@ -221,8 +221,10 @@ Item {
     }
 
     HoverHandler { cursorShape: Qt.PointingHandCursor }
-    TapHandler {
-      onTapped: {
+    OmabarClickTarget {
+      anchors.fill: parent
+      bar: root.bar
+      onPressed: {
         if (root.player && root.player.canTogglePlaying) root.player.togglePlaying()
         else root.openApp()
       }
@@ -366,8 +368,15 @@ Item {
         }
 
         HoverHandler { id: trackHover; cursorShape: Qt.PointingHandCursor }
-        TapHandler { acceptedButtons: Qt.LeftButton; onTapped: root.openApp() }
-        TapHandler { acceptedButtons: Qt.RightButton; onTapped: if (root.player && root.player.canGoNext) root.player.next() }
+        OmabarClickTarget {
+          anchors.fill: parent
+          bar: root.bar
+          acceptedButtons: Qt.LeftButton | Qt.RightButton
+          onPressed: function(button) {
+            if (button === Qt.RightButton) { if (root.player && root.player.canGoNext) root.player.next() }
+            else root.openApp()
+          }
+        }
         WheelHandler {
           onWheel: function(event) {
             var p = root.player
@@ -389,7 +398,7 @@ Item {
         font.pixelSize: Style.font.bodySmall
         // Resting: a click on the disc or the name opens Spotify.
         HoverHandler { id: restHover; cursorShape: Qt.PointingHandCursor }
-        TapHandler { onTapped: root.openApp() }
+        OmabarClickTarget { anchors.fill: parent; bar: root.bar; onPressed: root.openApp() }
       }
 
       Item { width: Style.space(2); height: 1 }

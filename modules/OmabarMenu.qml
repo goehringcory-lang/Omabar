@@ -40,7 +40,7 @@ Item {
     height: root.tile
     radius: Math.round(root.tile * 0.32)
     color: root.accent
-    scale: tap.pressed ? 0.92 : (hover.hovered ? 1.06 : 1.0)
+    scale: tap.held ? 0.92 : (hover.hovered ? 1.06 : 1.0)
     Behavior on scale { NumberAnimation { duration: Style.duration(180); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut } }
     Behavior on color { ColorAnimation { duration: Style.duration(250) } }
 
@@ -64,10 +64,12 @@ Item {
   }
 
   HoverHandler { id: hover; cursorShape: Qt.PointingHandCursor }
-  TapHandler {
+  OmabarClickTarget {
     id: tap
+    anchors.fill: parent
+    bar: root.bar
     acceptedButtons: Qt.LeftButton | Qt.RightButton
-    onTapped: function(eventPoint, button) {
+    onPressed: function(button) {
       if (!root.bar) return
       if (button === Qt.RightButton) root.bar.run("xdg-terminal-exec")
       else root.bar.run("omarchy-shell shell toggle omarchy.menu '{\"menu\":\"root\"}'")

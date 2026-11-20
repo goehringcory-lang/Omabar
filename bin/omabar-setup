@@ -246,12 +246,14 @@ fi
 if [[ $(omarchy-shell shell ping 2>/dev/null) != "ok" ]]; then
   echo "Omabar is set up, but the Omarchy shell isn't answering, so it couldn't be checked. Start it with: omarchy restart shell"
 else
-  active=""
-  for _ in $(seq 1 24); do
-    active=$(omabar_active)
-    [[ $active == "true" ]] && break
-    sleep 0.25
-  done
+  # The shell reports a bar as active the moment it starts loading it, and
+  # only falls back once loading fails, so give it time and then check both
+  # what it reports and what it logged.
+  sleep 3
+  active=$(omabar_active)
+  if shell_log --since "$started" | grep -q -E "bar option $PLUGIN_ID failed to load"; then
+    active="false"
+  fi
   if [[ $active != "true" ]]; then
     {
       echo "omabar-setup: the shell did not load Omabar and is showing the built-in bar instead."
