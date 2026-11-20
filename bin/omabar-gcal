@@ -155,15 +155,49 @@ def cmd_login():
         print("Google didn't approve the login" + (f": {result['error']}" if result.get("error") else "."))
         return 1
 
-    token = post_form("https://oauth2.googleapis.com/token", {
-        "code": result["code"], "client_id": cid, "client_secret": secret,
-        "redirect_uri": redirect, "grant_type": "authorization_code", "code_verifier": verifier,
-    })
+    try:
+        token = post_form("https://oauth2.googleapis.com/token", {
+            "code": result["code"], "client_id": cid, "client_secret": secret,
+            "redirect_uri": redirect, "grant_type": "authorization_code", "code_verifier": verifier,
+        })
+    except urllib.error.HTTPError as error:
+        print("Google refused the sign-in: " + google_error(error))
+        print("Check the client ID and secret. To enter them again, run:")
+        print(f"  rm {CLIENT_FILE} && {sys.argv[0]} login")
+        return 1
+    if not token.get("refresh_token"):
+        print("Google didn't send a lasting login (no refresh token). Run login again.")
+        return 1
     token["expires_at"] = time.time() + token.get("expires_in", 3600) - 60
     write_private(TOKEN_FILE, token)
     clear_cache()
-    print("Connected. Pick which calendars show from the calendar's Calendars button.")
+
+    # Prove it works now, rather than leaving the bar to find out.
+    try:
+        found = len(api("/users/me/calendarList", maxResults=250).get("items", []))
+    except urllib.error.HTTPError as error:
+        print("Signed in, but Google Calendar refused the request: " + google_error(error))
+        print("If it mentions the API being disabled, enable the Google Calendar API for this project:")
+        print("  https://console.cloud.google.com/apis/library/calendar-json.googleapis.com")
+        print(f"Then run: {sys.argv[0]} login")
+        return 1
+    print(f"Connected: {found} calendar{'s' if found != 1 else ''} found.")
+    print("Open the clock's calendar again. Pick which calendars show from its Calendars button.")
     return 0
+
+
+def google_error(error):
+    """The reason Google gave for an HTTP error, as one line."""
+    try:
+        body = json.loads(error.read().decode() or "{}")
+    except (ValueError, OSError):
+        body = {}
+    detail = body.get("error")
+    if isinstance(detail, dict):
+        return f"{error.code} {detail.get('message', '')}".strip()
+    if detail:
+        return f"{error.code} {detail}: {body.get('error_description', '')}".strip(": ")
+    return f"{error.code} {error.reason}"
 
 
 def access_token():
@@ -333,9 +367,13 @@ def main(argv):
         print(__doc__)
         return 0
     command, rest = argv[1], argv[2:]
-    try:
-        if command == "login":
+    if command == "login":
+        try:
             return cmd_login()
+        except (urllib.error.URLError, OSError, ValueError) as error:
+            print(f"Sign-in failed: {error}")
+            return 1
+    try:
         if command == "calendars":
             return cmd_calendars()
         if command == "toggle" and len(rest) == 1:
@@ -344,6 +382,9 @@ def main(argv):
             return cmd_events(rest[0] if rest else None)
         if command == "status":
             return cmd_status()
+    except urllib.error.HTTPError as error:
+        print(json.dumps({"connected": True, "error": google_error(error), "events": [], "calendars": []}))
+        return 0
     except (urllib.error.URLError, OSError, KeyError, ValueError) as error:
         print(json.dumps({"connected": True, "error": str(error), "events": [], "calendars": []}))
         return 0

@@ -272,7 +272,11 @@ Item {
 
       Text {
         visible: card.agenda.length === 0
-        text: card.loading ? "Loading…" : (card.error ? "Couldn't reach Google Calendar" : "Nothing scheduled")
+        width: parent.width
+        wrapMode: Text.WordWrap
+        maximumLineCount: 3
+        elide: Text.ElideRight
+        text: card.loading ? "Loading…" : (card.error ? "Couldn't reach Google Calendar: " + card.error : "Nothing scheduled")
         color: card.ink
         opacity: 0.45
         font.family: card.fontName
