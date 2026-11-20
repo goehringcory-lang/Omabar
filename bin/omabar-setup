@@ -11,8 +11,8 @@
 # Layout
 #   left    Omarchy menu (accent tile), workspace dots with a water-drop switch
 #   center  quick indicators, Spotify mini player, split-flap clock
-#   (the world clock, restyled with split-flap times, and omaplug, the plugin
-#    manager, sit just right of the clock)
+#   (the world clock, restyled with split-flap times, omaplug, the plugin
+#    manager, and weather sit just right of the clock)
 #   right   the hover drawer handle (always leftmost), AI usage (Omarchy
 #           agents, plus ai-usagebar when installed), notifications,
 #           Thunderbird mail, Omarchy settings, and battery. The drawer holds every other plugin widget
@@ -392,7 +392,10 @@ jq -S \
       centerEnd: (
         [ { id: $elsewhen } ]
         + ($omaplug | map({ id: . }))
-        + [ { id: "omarchy.system-update" } ]
+        + [
+            { id: "omabar-weather", type: "qml", source: ($dir + "/modules/OmabarWeather.qml") },
+            { id: "omarchy.system-update" }
+          ]
       ),
       # Always in view: AI usage, notifications, mail, settings, battery. The rest
       # waits in the hover drawer (tray).
