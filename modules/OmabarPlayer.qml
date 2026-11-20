@@ -18,6 +18,7 @@
 //   playlists      - extra pinned playlists: [{ "name": "…", "uri": "…" }]
 //   showIdle       - keep the small disc and chevron while Spotify is closed (default true)
 //   bulge          - swell out of the bar while a track is loaded (default true)
+//   spin           - turn the album art while music plays (default true)
 import QtQuick
 import QtQuick.Effects
 import Quickshell
@@ -41,6 +42,7 @@ Item {
   readonly property bool anyPlayer: setting("anyPlayer", false) === true
   readonly property int maxTextWidth: Number(setting("maxWidth", 220))
   readonly property bool showIdle: setting("showIdle", true) !== false
+  readonly property bool spin: setting("spin", true) !== false
   readonly property string helper: String(Qt.resolvedUrl("../bin/omabar-spotify")).replace(/^file:\/\//, "")
 
   readonly property bool vertical: bar ? bar.vertical : false
@@ -52,6 +54,10 @@ Item {
   property real bulge: bulging ? Style.space(6) : 0
   Behavior on bulge { NumberAnimation { duration: Style.duration(320); easing.type: Easing.OutBack; easing.overshoot: 1.4 } }
   readonly property int discSize: Math.round(barSize * 0.72 + bulge * 2)
+  // The cover is decoded once, at twice the largest size the disc reaches.
+  // Tying it to discSize would fetch and decode the art again on every frame
+  // of the bulge.
+  readonly property int coverPixels: Math.round(barSize * 0.72 + Style.space(6) * 2) * 2
   readonly property color base: bar && bar.background ? bar.background : Commons.Color.background
   readonly property bool lightBase: (0.2126 * base.r + 0.7152 * base.g + 0.0722 * base.b) > 0.55
 
@@ -200,7 +206,7 @@ Item {
       id: cover
       anchors.fill: parent
       source: root.artUrl
-      sourceSize: Qt.size(disc.width * 2, disc.height * 2)
+      sourceSize: Qt.size(root.coverPixels, root.coverPixels)
       fillMode: Image.PreserveAspectCrop
       asynchronous: true
       mipmap: true
@@ -224,13 +230,16 @@ Item {
       maskThresholdMin: 0.5
       maskSpreadAtMin: 1.0
       visible: cover.status === Image.Ready
-      // Turns like a record while playing and rests where it stopped.
-      RotationAnimator on rotation {
-        from: 0; to: 360
-        duration: 24000
-        loops: Animation.Infinite
-        running: root.playing && !Style.reduceMotion
-      }
+    }
+    // Turns like a record while playing and rests where it stopped. A record
+    // turns slowly (once in 24 seconds), so fifteen small steps a second look
+    // the same as sixty, and the bar and the blur behind it are redrawn a
+    // quarter as often.
+    Timer {
+      interval: 66
+      repeat: true
+      running: root.playing && root.spin && art.visible && !Style.reduceMotion
+      onTriggered: art.rotation = (art.rotation + 0.99) % 360
     }
     // No cover yet: a quiet disc in the accent color.
     Rectangle {
@@ -400,11 +409,25 @@ Item {
             radius: 1
             color: Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.14)
             Rectangle {
+              id: fill
               height: parent.height
               radius: 1
-              width: parent.width * root.progress
               color: Commons.Color.accent
-              Behavior on width { NumberAnimation { duration: Style.duration(900) } }
+              // Moves in whole pixels, so the bar is redrawn only when the
+              // line has somewhere to go, and eases only across a jump (a
+              // seek or a new track) instead of animating all the time.
+              readonly property int goal: Math.round(parent.width * root.progress)
+              onGoalChanged: {
+                if (Math.abs(goal - width) > Style.space(6) && !Style.reduceMotion) {
+                  jump.to = goal
+                  jump.restart()
+                } else {
+                  jump.stop()
+                  width = goal
+                }
+              }
+              Component.onCompleted: width = goal
+              NumberAnimation { id: jump; target: fill; property: "width"; duration: 260; easing.type: Easing.OutCubic }
             }
           }
         }

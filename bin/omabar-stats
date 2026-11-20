@@ -1,0 +1,136 @@
+#!/bin/bash
+# Measure what the Omarchy shell (and so Omabar) costs: memory and CPU.
+#
+#   omabar-stats                watch for 10 seconds, print, and add to the log
+#   omabar-stats 30             watch for 30 seconds instead
+#   omabar-stats -n "before"    label this measurement in the log
+#   omabar-stats --log          show past measurements, to compare before and after
+#
+# The bar is one part of the shell process, so the numbers are for the whole
+# shell. To compare two versions fairly, measure in the same state both times:
+# the same music playing (or none), no drop-downs open, mouse off the bar, and
+# a minute or two after the shell started.
+
+set -euo pipefail
+
+LOG_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/omabar/stats.log"
+PLUGIN_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+
+seconds=10
+note=""
+while (($#)); do
+  case $1 in
+    --log)
+      if [[ ! -s $LOG_FILE ]]; then
+        echo "No measurements yet. Run: omabar-stats"
+      elif command -v column >/dev/null; then
+        column -t -s $'\t' "$LOG_FILE"
+      else
+        cat "$LOG_FILE"
+      fi
+      exit 0
+      ;;
+    -n | --note)
+      note="${2:-}"
+      shift
+      ;;
+    -h | --help)
+      sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *[!0-9]* | "")
+      echo "omabar-stats: unknown option: $1" >&2
+      exit 2
+      ;;
+    *) seconds=$1 ;;
+  esac
+  shift
+done
+((seconds >= 1)) || seconds=1
+
+# The shell is "quickshell -n -p <omarchy>/shell"; skip its short-lived
+# "ipc", "list" and "log" calls. The oldest match is the shell itself.
+shell_pid() {
+  local pid args
+  for pid in $(pgrep -u "$UID" -x 'quickshell|qs' --oldest 2>/dev/null; pgrep -u "$UID" -x 'quickshell|qs' 2>/dev/null); do
+    args=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null) || continue
+    [[ $args == *"/shell"* ]] || continue
+    [[ $args =~ \ (ipc|list|log|kill)\  ]] && continue
+    echo "$pid"
+    return 0
+  done
+  return 1
+}
+
+# utime + stime of a process, in clock ticks.
+cpu_ticks() {
+  local stat
+  stat=$(<"/proc/$1/stat") || { echo 0; return; }
+  stat=${stat##*) }
+  # shellcheck disable=SC2086
+  set -- $stat
+  echo $((${12} + ${13}))
+}
+
+status_field() { awk -v key="$2:" '$1 == key { print $2; exit }' "/proc/$1/status" 2>/dev/null || true; }
+
+# Proportional and private memory, in kB (needs smaps_rollup; ours to read).
+rollup_field() { awk -v key="$2:" '$1 == key { sum += $2 } END { print sum + 0 }' "/proc/$1/smaps_rollup" 2>/dev/null || echo 0; }
+
+mb() { awk -v kb="${1:-0}" 'BEGIN { printf "%.0f", kb / 1024 }'; }
+
+pid=$(shell_pid) || {
+  echo "omabar-stats: the Omarchy shell isn't running (no quickshell process found)" >&2
+  exit 1
+}
+compositor=$(pgrep -u "$UID" -x 'Hyprland|hyprland' --oldest 2>/dev/null || true)
+
+ticks_per_second=$(getconf CLK_TCK)
+shell_before=$(cpu_ticks "$pid")
+switches_before=$(($(status_field "$pid" voluntary_ctxt_switches) + 0))
+[[ -n $compositor ]] && compositor_before=$(cpu_ticks "$compositor")
+
+echo "Watching the shell (pid $pid) for $seconds seconds…"
+sleep "$seconds"
+
+[[ -d /proc/$pid ]] || { echo "omabar-stats: the shell restarted while measuring; run it again" >&2; exit 1; }
+shell_after=$(cpu_ticks "$pid")
+switches_after=$(($(status_field "$pid" voluntary_ctxt_switches) + 0))
+
+percent() { awk -v d="$(($2 - $1))" -v hz="$ticks_per_second" -v s="$seconds" 'BEGIN { printf "%.1f", d * 100 / hz / s }'; }
+
+shell_cpu=$(percent "$shell_before" "$shell_after")
+compositor_cpu="-"
+compositor_line="Hyprland not found"
+if [[ -n $compositor && -d /proc/$compositor ]]; then
+  compositor_cpu=$(percent "$compositor_before" "$(cpu_ticks "$compositor")")
+  compositor_line="$compositor_cpu% Hyprland (drawing the bar and the blur behind it)"
+fi
+wakeups=$(awk -v d="$((switches_after - switches_before))" -v s="$seconds" 'BEGIN { printf "%.0f", d / s }')
+
+rss=$(mb "$(status_field "$pid" VmRSS)")
+pss=$(mb "$(rollup_field "$pid" Pss)")
+private=$(mb "$(($(rollup_field "$pid" Private_Clean) + $(rollup_field "$pid" Private_Dirty)))")
+threads=$(status_field "$pid" Threads)
+uptime=$(ps -o etime= -p "$pid" | tr -d ' ')
+
+# What the shell keeps running beside itself (Omabar's mail watcher is one).
+helpers=$(ps -o rss=,comm= --ppid "$pid" 2>/dev/null | awk '{ n++; kb += $1; names = names (names ? ", " : "") $2 } END { if (n) printf "%d (%s), %.0f MB", n, names, kb / 1024; else printf "none" }')
+revision=$(git -C "$PLUGIN_DIR" log -1 --format=%h 2>/dev/null || echo "?")
+
+cat <<EOF
+
+Omarchy shell, up $uptime (Omabar $revision)
+  Memory    $rss MB in use (RSS) · $pss MB its fair share (PSS) · $private MB its own
+  CPU       $shell_cpu% of one core, shell · $compositor_line
+  Wake-ups  $wakeups a second
+  Threads   $threads
+  Helpers   $helpers
+
+Lower is better everywhere. CPU and wake-ups at rest should be close to zero.
+EOF
+
+mkdir -p "$(dirname "$LOG_FILE")"
+[[ -s $LOG_FILE ]] || printf 'when\tomabar\trss_mb\tpss_mb\tprivate_mb\tshell_cpu%%\thyprland_cpu%%\twakeups/s\tseconds\tnote\n' >"$LOG_FILE"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$revision" "$rss" "$pss" "$private" "$shell_cpu" "$compositor_cpu" "$wakeups" "$seconds" "${note:--}" >>"$LOG_FILE"
+echo "Saved. Compare measurements with: omabar-stats --log"

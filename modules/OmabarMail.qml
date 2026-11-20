@@ -3,9 +3,9 @@
 // the theme's accent color, and stays lit until the mail is read.
 //
 // Unread counts come from Thunderbird's own folder summaries (bin/omabar-mail-
-// unread), checked every few seconds and right away when Thunderbird shows a
-// new-mail alert. An alert also lights it on its own, until you open
-// Thunderbird or right-click the icon.
+// unread). Nothing polls: the count is taken again when Thunderbird saves one
+// of those summaries, shows a new-mail alert, or loses focus. An alert also
+// lights it on its own, until you open Thunderbird or right-click the icon.
 //
 // Settings (inline on the shell.json entry):
 //   app    - window class / command to open (default "thunderbird")
@@ -45,15 +45,32 @@ Item {
           var before = root.unread
           root.unread = Math.max(0, Number(data.unread) || 0)
           root.inboxes = Array.isArray(data.inboxes) ? data.inboxes : []
+          var files = root.inboxes.map(function(inbox) { return String(inbox.file || "") })
+            .filter(function(file) { return file !== "" })
+          if (files.join("\n") !== root.inboxFiles.join("\n")) root.inboxFiles = files
           if (root.unread > before) pulse.restart()
         } catch (e) {}
       }
     }
   }
-  // Thunderbird saves a folder's summary shortly after mail changes, so look
-  // often; reading a few small files is cheap.
-  Timer { interval: 8000; running: true; repeat: true; triggeredOnStart: true; onTriggered: root.recount() }
-  Timer { id: recountSoon; interval: 2500; onTriggered: root.recount() }
+  // Thunderbird saves a folder's summary shortly after mail changes. Each
+  // inbox's summary is watched (never read into the shell), and the counter
+  // runs once Thunderbird has finished writing.
+  property var inboxFiles: []
+  Instantiator {
+    model: root.inboxFiles
+    delegate: FileView {
+      required property string modelData
+      preload: false
+      path: modelData
+      watchChanges: true
+      printErrors: false
+      onFileChanged: recountSoon.restart()
+    }
+  }
+  Timer { id: recountSoon; interval: 2000; onTriggered: root.recount() }
+  // A safety net, which also finds an account added since the last look.
+  Timer { interval: 300000; running: true; repeat: true; triggeredOnStart: true; onTriggered: root.recount() }
 
   // Survives a shell restart, so a mail that arrived meanwhile isn't lost.
   readonly property string stateFile: (Quickshell.env("XDG_CACHE_HOME") || Quickshell.env("HOME") + "/.cache") + "/omabar/mail-unseen"
@@ -119,13 +136,18 @@ Item {
   }
   Timer { id: restart; interval: 5000; onTriggered: watcher.running = true }
 
-  // Looking at Thunderbird counts as reading the news.
+  // Looking at Thunderbird counts as reading the news, and leaving it is a
+  // good moment to count what is still unread.
+  property bool appFocused: false
   Connections {
     target: Hyprland
     function onRawEvent(event) {
       if (!event || String(event.name) !== "activewindow") return
       var windowClass = String(event.data || "").split(",")[0].toLowerCase()
-      if (windowClass.indexOf(root.app.toLowerCase()) !== -1) root.clear()
+      var focused = windowClass.indexOf(root.app.toLowerCase()) !== -1
+      if (focused) root.clear()
+      if (focused !== root.appFocused) recountSoon.restart()
+      root.appFocused = focused
     }
   }
 

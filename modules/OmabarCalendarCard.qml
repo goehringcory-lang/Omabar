@@ -11,6 +11,11 @@ Item {
   property color ink: Commons.Color.foreground
   property color accent: Commons.Color.accent
   property string fontName: "monospace"
+  // Agenda times follow the clock: 9:30 AM, or 09:30.
+  property bool twelveHour: true
+  // Ink that reads on the accent color, as on the Omarchy button's tile.
+  readonly property bool lightAccent: (0.2126 * accent.r + 0.7152 * accent.g + 0.0722 * accent.b) > 0.5
+  readonly property color onAccent: lightAccent ? Qt.rgba(0.06, 0.06, 0.08, 0.92) : Qt.rgba(1, 1, 1, 0.95)
 
   property bool connected: false
   property bool loading: false
@@ -23,8 +28,6 @@ Item {
   signal openEvent(string link)
   signal monthShown(int year, int month)   // month is 1-12
 
-  // 12-hour times in the agenda, like the clock above it.
-  property bool twelveHour: true
   // First column of the grid: 0 Sunday … 6 Saturday; -1 follows the system's region.
   property int weekStart: -1
   readonly property int firstDay: {
@@ -244,14 +247,14 @@ Item {
             color: dayCell.isToday ? card.accent
               : dayCell.isSelected ? Qt.rgba(card.ink.r, card.ink.g, card.ink.b, 0.14)
               : dayHover.hovered ? Qt.rgba(card.ink.r, card.ink.g, card.ink.b, 0.07) : "transparent"
-            border.width: dayCell.isSelected && dayCell.isToday ? 2 : 0
-            border.color: Qt.rgba(card.ink.r, card.ink.g, card.ink.b, 0.6)
+            scale: dayTap.pressed ? 0.9 : 1
             Behavior on color { ColorAnimation { duration: Style.duration(120) } }
+            Behavior on scale { NumberAnimation { duration: Style.duration(140); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut } }
 
             Text {
               anchors.centerIn: parent
               text: dayCell.modelData.getDate()
-              color: dayCell.isToday ? Commons.Color.background : card.ink
+              color: dayCell.isToday ? card.onAccent : card.ink
               opacity: dayCell.inMonth || dayCell.isToday ? 1 : 0.3
               font.family: card.fontName
               font.pixelSize: Style.font.bodySmall
@@ -277,6 +280,7 @@ Item {
 
           HoverHandler { id: dayHover; cursorShape: Qt.PointingHandCursor }
           TapHandler {
+            id: dayTap
             onTapped: {
               card.selected = new Date(dayCell.modelData.getFullYear(), dayCell.modelData.getMonth(), dayCell.modelData.getDate())
               if (!dayCell.inMonth) {
@@ -329,7 +333,8 @@ Item {
           width: parent.width
           height: Style.space(40)
           radius: Style.space(10)
-          color: Qt.rgba(card.ink.r, card.ink.g, card.ink.b, rowHover.hovered ? 0.08 : 0.0)
+          color: Qt.rgba(card.ink.r, card.ink.g, card.ink.b, !eventRow.modelData.link ? 0.0 : rowTap.pressed ? 0.16 : rowHover.hovered ? 0.10 : 0.0)
+          Behavior on color { ColorAnimation { duration: Style.duration(100) } }
 
           Rectangle {
             x: Style.space(6)
@@ -365,7 +370,7 @@ Item {
             }
           }
           HoverHandler { id: rowHover; cursorShape: eventRow.modelData.link ? Qt.PointingHandCursor : Qt.ArrowCursor }
-          TapHandler { onTapped: if (eventRow.modelData.link) card.openEvent(eventRow.modelData.link) }
+          TapHandler { id: rowTap; onTapped: if (eventRow.modelData.link) card.openEvent(eventRow.modelData.link) }
         }
       }
 
@@ -435,7 +440,8 @@ Item {
               width: parent.width
               height: Style.space(32)
               radius: Style.space(8)
-              color: Qt.rgba(card.ink.r, card.ink.g, card.ink.b, calHover.hovered ? 0.08 : 0.0)
+              color: Qt.rgba(card.ink.r, card.ink.g, card.ink.b, calTap.pressed ? 0.16 : calHover.hovered ? 0.10 : 0.0)
+              Behavior on color { ColorAnimation { duration: Style.duration(100) } }
 
               Rectangle {
                 id: box
@@ -471,7 +477,7 @@ Item {
                 font.pixelSize: Style.font.bodySmall
               }
               HoverHandler { id: calHover; cursorShape: Qt.PointingHandCursor }
-              TapHandler { onTapped: card.toggleCalendar(calRow.modelData.id) }
+              TapHandler { id: calTap; onTapped: card.toggleCalendar(calRow.modelData.id) }
             }
           }
         }
@@ -504,16 +510,19 @@ Item {
         anchors.fill: parent
         radius: Style.space(12)
         color: Qt.rgba(card.accent.r, card.accent.g, card.accent.b, connectHover.hovered ? 1.0 : 0.88)
+        scale: connectTap.pressed ? 0.98 : 1
+        Behavior on color { ColorAnimation { duration: Style.duration(120) } }
+        Behavior on scale { NumberAnimation { duration: Style.duration(140); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut } }
         Text {
           anchors.centerIn: parent
           text: "\u{F02AD}  Connect Google Calendar"
-          color: Commons.Color.background
+          color: card.onAccent
           font.family: card.fontName
           font.pixelSize: Style.font.bodySmall
           font.weight: Font.DemiBold
         }
         HoverHandler { id: connectHover; cursorShape: Qt.PointingHandCursor }
-        TapHandler { onTapped: card.connectRequested() }
+        TapHandler { id: connectTap; onTapped: card.connectRequested() }
       }
     }
   }
@@ -526,8 +535,10 @@ Item {
     height: Style.space(26)
     width: square ? height : chipText.implicitWidth + Style.space(20)
     radius: height / 2
-    color: Qt.rgba(card.ink.r, card.ink.g, card.ink.b, chipHover.hovered ? 0.14 : 0.07)
+    color: Qt.rgba(card.ink.r, card.ink.g, card.ink.b, chipTap.pressed ? 0.20 : chipHover.hovered ? 0.14 : 0.07)
+    scale: chipTap.pressed ? 0.95 : 1
     Behavior on color { ColorAnimation { duration: Style.duration(120) } }
+    Behavior on scale { NumberAnimation { duration: Style.duration(140); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut } }
     Text {
       id: chipText
       anchors.centerIn: parent
@@ -537,6 +548,6 @@ Item {
       font.pixelSize: Style.font.bodySmall
     }
     HoverHandler { id: chipHover; cursorShape: Qt.PointingHandCursor }
-    TapHandler { onTapped: chip.picked() }
+    TapHandler { id: chipTap; onTapped: chip.picked() }
   }
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Print how many unread messages sit in Thunderbird's inboxes, as JSON.
 
-    omabar-mail-unread            {"unread": 3, "inboxes": [{"account": ..., "unread": ...}]}
+    omabar-mail-unread            {"unread": 3, "inboxes": [{"account": ..., "unread": ..., "file": ...}]}
 
 Thunderbird keeps each folder's summary in a .msf file (Mozilla's Mork
 format); the folder's unread count is its "numNewMsgs" field, updated as mail
@@ -73,7 +73,7 @@ def main():
     for path in inbox_files():
         count = unread_in(path)
         if count is not None:
-            inboxes.append({"account": account_name(path), "unread": count})
+            inboxes.append({"account": account_name(path), "unread": count, "file": os.path.realpath(path)})
     print(json.dumps({"unread": sum(i["unread"] for i in inboxes), "inboxes": inboxes}))
     return 0
 
