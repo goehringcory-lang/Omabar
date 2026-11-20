@@ -1,10 +1,11 @@
-// Omabar mail: a Thunderbird button. It matches the other bar icons until new
-// mail arrives in any of Thunderbird's inboxes, then lights up in the theme's
-// accent color. Opening Thunderbird (click, or focusing its window) clears it.
+// Omabar mail: a Thunderbird button. It matches the other bar icons until any
+// of Thunderbird's inboxes (every account) has unread mail, then lights up in
+// the theme's accent color, and stays lit until the mail is read.
 //
-// New mail is noticed from Thunderbird's own desktop notifications, so keep
-// Thunderbird running (it can sit in the background) with new-mail alerts on,
-// which is its default. Right-click marks it seen without opening.
+// Unread counts come from Thunderbird's own folder summaries (bin/omabar-mail-
+// unread), checked every few seconds and right away when Thunderbird shows a
+// new-mail alert. An alert also lights it on its own, until you open
+// Thunderbird or right-click the icon.
 //
 // Settings (inline on the shell.json entry):
 //   app    - window class / command to open (default "thunderbird")
@@ -25,7 +26,34 @@ Item {
 
   readonly property string app: String(settings && settings.app ? settings.app : "thunderbird")
   property int unseen: 0
-  readonly property bool hasNew: unseen > 0
+  property int unread: 0
+  property var inboxes: []
+  readonly property bool hasNew: unseen > 0 || unread > 0
+  readonly property string counter: String(Qt.resolvedUrl("../bin/omabar-mail-unread")).replace(/^file:\/\//, "")
+
+  function recount() {
+    if (!counterProc.running) counterProc.running = true
+  }
+
+  Process {
+    id: counterProc
+    command: [root.counter]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try {
+          var data = JSON.parse(text)
+          var before = root.unread
+          root.unread = Math.max(0, Number(data.unread) || 0)
+          root.inboxes = Array.isArray(data.inboxes) ? data.inboxes : []
+          if (root.unread > before) pulse.restart()
+        } catch (e) {}
+      }
+    }
+  }
+  // Thunderbird saves a folder's summary shortly after mail changes, so look
+  // often; reading a few small files is cheap.
+  Timer { interval: 8000; running: true; repeat: true; triggeredOnStart: true; onTriggered: root.recount() }
+  Timer { id: recountSoon; interval: 2500; onTriggered: root.recount() }
 
   // Survives a shell restart, so a mail that arrived meanwhile isn't lost.
   readonly property string stateFile: (Quickshell.env("XDG_CACHE_HOME") || Quickshell.env("HOME") + "/.cache") + "/omabar/mail-unseen"
@@ -47,6 +75,14 @@ Item {
     pulse.stop()
     glow.opacity = 0
     remember()
+  }
+
+  // "imap.gmail.com 2, imap.gmail-1.com 1" when more than one inbox has mail.
+  function breakdown() {
+    var parts = []
+    for (var i = 0; i < inboxes.length; i++)
+      if (inboxes[i].unread > 0) parts.push(inboxes[i].account + " " + inboxes[i].unread)
+    return parts.length > 1 ? "\n" + parts.join(", ") : ""
   }
 
   function open() {
@@ -74,6 +110,7 @@ Item {
           root.unseen += 1
           root.remember()
           pulse.restart()
+          recountSoon.restart()
         }
       }
     }
@@ -102,9 +139,11 @@ Item {
     text: root.hasNew ? "\u{F01EE}" : "\u{F01F0}"
     active: root.hasNew
     activeColor: Commons.Color.accent
-    tooltipText: root.hasNew
-      ? (root.unseen === 1 ? "1 new message" : root.unseen + " new messages") + "\nClick to open Thunderbird · Right-click to mark seen"
-      : "Thunderbird"
+    tooltipText: root.unread > 0
+      ? (root.unread === 1 ? "1 unread message" : root.unread + " unread messages") + root.breakdown() + "\nClick to open Thunderbird"
+      : root.unseen > 0
+        ? (root.unseen === 1 ? "1 new message" : root.unseen + " new messages") + "\nClick to open Thunderbird · Right-click to mark seen"
+        : "Thunderbird"
     onPressed: function(pressedButton) {
       if (pressedButton === Qt.RightButton) root.clear()
       else root.open()

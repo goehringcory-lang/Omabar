@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""Print how many unread messages sit in Thunderbird's inboxes, as JSON.
+
+    omabar-mail-unread            {"unread": 3, "inboxes": [{"account": ..., "unread": ...}]}
+
+Thunderbird keeps each folder's summary in a .msf file (Mozilla's Mork
+format); the folder's unread count is its "numNewMsgs" field, updated as mail
+arrives and is read. This reads every account's inbox in every Thunderbird
+profile (regular, Flatpak and Snap installs), so all your accounts count.
+"""
+import glob
+import json
+import os
+import re
+import sys
+
+HOME = os.path.expanduser("~")
+PROFILE_ROOTS = [
+    os.path.join(HOME, ".thunderbird"),
+    os.path.join(HOME, ".var/app/org.mozilla.Thunderbird/.thunderbird"),
+    os.path.join(HOME, ".var/app/net.thunderbird.Thunderbird/.thunderbird"),
+    os.path.join(HOME, "snap/thunderbird/common/.thunderbird"),
+]
+INBOX_NAMES = {"inbox.msf"}
+
+
+def inbox_files():
+    seen = set()
+    for root in PROFILE_ROOTS:
+        for store in ("ImapMail", "Mail"):
+            for path in glob.glob(os.path.join(root, "*", store, "*", "*.msf")):
+                if os.path.basename(path).lower() in INBOX_NAMES:
+                    real = os.path.realpath(path)
+                    if real not in seen:
+                        seen.add(real)
+                        yield path
+
+
+def unread_in(path):
+    """The folder's unread count from its Mork summary, or None."""
+    try:
+        with open(path, "r", encoding="latin-1") as handle:
+            text = handle.read()
+    except OSError:
+        return None
+    # The column dictionary names numNewMsgs with a hex id, e.g. (9F=numNewMsgs).
+    column = re.search(r"\(([0-9A-Fa-f]+)\s*=\s*numNewMsgs\)", text)
+    if not column:
+        return None
+    col = re.escape(column.group(1))
+    # Later transactions override earlier ones, so the last cell wins. A cell
+    # holds the value inline, (^9F=3), or by reference to a value atom, (^9F^A1).
+    cells = list(re.finditer(r"\(\^" + col + r"(=([^)]*)|\^([0-9A-Fa-f]+))\)", text))
+    if not cells:
+        return 0
+    last = cells[-1]
+    value = last.group(2)
+    if value is None:
+        atom = re.findall(r"\(" + re.escape(last.group(3)) + r"=([^)]*)\)", text)
+        value = atom[-1] if atom else ""
+    try:
+        return max(0, int(value.strip() or "0", 16))
+    except ValueError:
+        return None
+
+
+def account_name(path):
+    return os.path.basename(os.path.dirname(path))
+
+
+def main():
+    inboxes = []
+    for path in inbox_files():
+        count = unread_in(path)
+        if count is not None:
+            inboxes.append({"account": account_name(path), "unread": count})
+    print(json.dumps({"unread": sum(i["unread"] for i in inboxes), "inboxes": inboxes}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
