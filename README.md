@@ -10,7 +10,7 @@ A floating glass bar for [Omarchy](https://omarchy.org) 4. It sits over your des
 
 ![Split-flap clock](preview/split-flap-clock.gif)
 
-The player's chevron opens a playlist menu: one-click **Lofi Beats**, **Discover Weekly** and **Liked Songs** (started on shuffle), any playlists you pin, and every playlist on your Spotify account once you connect it. With Spotify closed the player rests as a small disc and chevron, so a playlist is still one click away.
+The player's chevron opens a playlist menu: one-click **Lofi Beats**, **Discover Weekly** and **Liked Songs** (started on shuffle), any playlists you pin, and every playlist on your Spotify account once you connect it. With Spotify closed the player rests as the Spotify logo and a chevron, so a playlist is still one click away.
 
 **Right:** only five things stay in view: AI usage (Omarchy's agents panel, plus [ai-usagebar](https://github.com/akitaonrails/ai-usagebar) when installed), notifications, Thunderbird mail (it turns the accent color when new mail arrives in any inbox), Omarchy settings, and battery. Everything else is folded into a drawer behind the chevron at the far left of the group. Hover it (or click to keep it open) and a glass panel drops below the bar with a tile for each control, [Omaland](https://github.com/bobby-nicholas/omaland) when installed, Bluetooth, network, sound, display and keyboard layout, plus your apps' tray icons. A tile opens that control's own Omarchy panel; a tray app opens on click and shows its menu on right-click. **Edit** in the panel hides anything you don't want there. The bar itself never widens, so nothing spills over the clock.
 
