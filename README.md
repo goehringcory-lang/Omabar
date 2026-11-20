@@ -12,7 +12,7 @@ A floating glass bar for [Omarchy](https://omarchy.org) 4. It sits over your des
 
 The player's chevron opens a playlist menu: one-click **Lofi Beats**, **Discover Weekly**, any playlists you pin, and every playlist on your Spotify account once you connect it. With Spotify closed the player rests as a small disc and chevron, so a playlist is still one click away.
 
-**Right:** only five things stay in view: AI usage (Omarchy's agents panel, plus [ai-usagebar](https://github.com/akitaonrails/ai-usagebar) when installed), notifications, Thunderbird mail (it turns the accent color when new mail arrives in any inbox), Omarchy settings, and battery. Everything else is folded into a drawer that slides open when you hover its chevron: [Omaland](https://github.com/bobby-nicholas/omaland) when installed, Bluetooth, Wi-Fi, audio, display and keyboard layout. Drag anything out of the drawer onto the bar to keep it in view.
+**Right:** only five things stay in view: AI usage (Omarchy's agents panel, plus [ai-usagebar](https://github.com/akitaonrails/ai-usagebar) when installed), notifications, Thunderbird mail (it turns the accent color when new mail arrives in any inbox), Omarchy settings, and battery. Everything else is folded into a drawer that slides open when you hover its chevron, which sits at the far left of the group: [Omaland](https://github.com/bobby-nicholas/omaland) when installed, Bluetooth, Wi-Fi, audio, display and keyboard layout. Drag anything out of the drawer onto the bar to keep it in view.
 
 ## Install
 

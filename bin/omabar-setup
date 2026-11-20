@@ -10,9 +10,9 @@
 #   center  quick indicators, Spotify mini player, split-flap clock
 #   (the world clock, restyled with split-flap times, and omaplug, the plugin
 #    manager, sit just right of the clock)
-#   right   AI usage (Omarchy agents, plus ai-usagebar when installed),
-#           notifications, Thunderbird mail, Omarchy settings, the hover
-#           drawer, and battery. The drawer holds every other plugin widget
+#   right   the hover drawer handle (always leftmost), AI usage (Omarchy
+#           agents, plus ai-usagebar when installed), notifications,
+#           Thunderbird mail, Omarchy settings, and battery. The drawer holds every other plugin widget
 #           you have installed (each one once), Omaland,
 #           Bluetooth, Wi-Fi, audio, display and keyboard layout.
 
@@ -190,7 +190,9 @@ jq -S \
       # Always in view: AI usage, notifications, mail, settings, battery. The rest
       # waits in the hover drawer (tray).
       right: (
-        [ { id: "omarchy.agents" } ]
+        # The drawer handle leads the group, so it stays leftmost and widgets
+        # added later land to its right.
+        [ { id: "omarchy.tray" }, { id: "omarchy.agents" } ]
         + ($usage | map({ id: . }))
         + [
             { id: "omabar-notifications", type: "command",
@@ -200,7 +202,6 @@ jq -S \
             { id: "omabar-mail", type: "qml", source: ($dir + "/modules/OmabarMail.qml"), app: "thunderbird" },
             { id: "omabar-settings", type: "command", text: "󰒓",
               tooltip: "Omarchy settings", onClick: "omarchy-menu toggle setup" },
-            { id: "omarchy.tray" },
             { id: "omarchy.power" }
           ]
       ),

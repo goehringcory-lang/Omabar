@@ -102,6 +102,8 @@ Item {
   // Shown while something plays, or resting as disc + chevron when idle.
   readonly property bool shown: active || (showIdle && !vertical)
   property bool menuOpen: false
+  // Called by the bar when another popup opens or a click lands outside.
+  function close() { menuOpen = false }
 
   function play(uri) {
     if (bar && uri) bar.run(Util.shellQuote(root.helper) + " play " + Util.shellQuote(uri))
@@ -222,7 +224,7 @@ Item {
     TapHandler {
       onTapped: {
         if (root.player && root.player.canTogglePlaying) root.player.togglePlaying()
-        else root.menuOpen = !root.menuOpen
+        else root.openApp()
       }
     }
   }
@@ -382,9 +384,12 @@ Item {
         anchors.verticalCenter: parent.verticalCenter
         text: "Spotify"
         color: root.ink
-        opacity: 0.6
+        opacity: restHover.hovered ? 1.0 : 0.6
         font.family: root.fontName
         font.pixelSize: Style.font.bodySmall
+        // Resting: a click on the disc or the name opens Spotify.
+        HoverHandler { id: restHover; cursorShape: Qt.PointingHandCursor }
+        TapHandler { onTapped: root.openApp() }
       }
 
       Item { width: Style.space(2); height: 1 }
