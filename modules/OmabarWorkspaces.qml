@@ -154,7 +154,7 @@ Item {
     root.flightStart = start
     root.landedId = -1                 // the old pill lets go of its water
     var hops = Math.abs(root.ids.indexOf(target) - root.ids.indexOf(from))
-    flight.duration = Math.min(560, 300 + hops * 45)
+    flight.duration = Math.min(320, 170 + hops * 25)
     drop.t = 0
     flight.start()
   }
@@ -176,7 +176,7 @@ Item {
           cx: at.x, cy: at.y,
           dx: Math.cos(angle) * reach, dy: Math.sin(angle) * reach,
           size: root.dot * (0.28 + Math.random() * 0.22),
-          life: 360 + Math.random() * 160
+          life: 260 + Math.random() * 120
         })
       }
     }
@@ -188,7 +188,8 @@ Item {
     property: "t"
     from: 0
     to: 1
-    easing.type: Easing.InOutCubic
+    // Leaves at once and eases into the landing, so a switch feels snappy.
+    easing.type: Easing.OutCubic
     onFinished: root.land()
   }
 
@@ -312,7 +313,7 @@ Item {
       opacity: 0.55 * (1 - k)
       NumberAnimation on k {
         from: 0; to: 1
-        duration: 480
+        duration: 360
         easing.type: Easing.OutCubic
         onFinished: ring.destroy()
       }
@@ -372,8 +373,8 @@ Item {
             origin.y: pill.height / 2
           }
 
-          Behavior on width { NumberAnimation { duration: Style.duration(320); easing.type: Easing.OutBack; easing.overshoot: 1.6 } }
-          Behavior on height { NumberAnimation { duration: Style.duration(320); easing.type: Easing.OutBack; easing.overshoot: 1.6 } }
+          Behavior on width { NumberAnimation { duration: Style.duration(220); easing.type: Easing.OutBack; easing.overshoot: 1.3 } }
+          Behavior on height { NumberAnimation { duration: Style.duration(220); easing.type: Easing.OutBack; easing.overshoot: 1.3 } }
           Behavior on opacity { NumberAnimation { duration: Style.duration(180) } }
           Behavior on color { ColorAnimation { duration: Style.duration(160) } }
         }
@@ -381,12 +382,12 @@ Item {
         SequentialAnimation {
           id: squash
           ParallelAnimation {
-            NumberAnimation { target: squashScale; property: root.vertical ? "yScale" : "xScale"; to: 1.18; duration: 90; easing.type: Easing.OutQuad }
-            NumberAnimation { target: squashScale; property: root.vertical ? "xScale" : "yScale"; to: 0.62; duration: 90; easing.type: Easing.OutQuad }
+            NumberAnimation { target: squashScale; property: root.vertical ? "yScale" : "xScale"; to: 1.18; duration: 60; easing.type: Easing.OutQuad }
+            NumberAnimation { target: squashScale; property: root.vertical ? "xScale" : "yScale"; to: 0.62; duration: 60; easing.type: Easing.OutQuad }
           }
           ParallelAnimation {
-            NumberAnimation { target: squashScale; property: "xScale"; to: 1; duration: 340; easing.type: Easing.OutElastic; easing.amplitude: 1.1; easing.period: 0.4 }
-            NumberAnimation { target: squashScale; property: "yScale"; to: 1; duration: 340; easing.type: Easing.OutElastic; easing.amplitude: 1.1; easing.period: 0.4 }
+            NumberAnimation { target: squashScale; property: "xScale"; to: 1; duration: 260; easing.type: Easing.OutElastic; easing.amplitude: 1.1; easing.period: 0.4 }
+            NumberAnimation { target: squashScale; property: "yScale"; to: 1; duration: 260; easing.type: Easing.OutElastic; easing.amplitude: 1.1; easing.period: 0.4 }
           }
         }
 

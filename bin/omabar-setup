@@ -200,8 +200,10 @@ jq -S \
       # waits in the hover drawer (tray).
       right: (
         # The drawer handle leads the group, so it stays leftmost and widgets
-        # added later land to its right.
-        [ { id: "omarchy.tray" }, { id: "omarchy.agents" } ]
+        # added later land to its right. It opens a panel below the bar
+        # rather than widening the bar, so the clock is never covered.
+        [ { id: "omabar-drawer", type: "qml", source: ($dir + "/modules/OmabarDrawer.qml") },
+          { id: "omarchy.agents" } ]
         + ($usage | map({ id: . }))
         + [
             { id: "omabar-notifications", type: "command",
