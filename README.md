@@ -61,7 +61,7 @@ Prefer the Google Calendar API (event colors set in Google, and every calendar a
 
 ### Thunderbird
 
-The mail button notices new mail from Thunderbird's own new-mail notifications, so leave Thunderbird running (it can sit in the background) with new-mail alerts on, which is its default. Clicking opens Thunderbird and clears the accent; so does switching to its window. Right-click marks it seen.
+The mail button turns the accent color while any inbox in Thunderbird, across all your accounts, has unread mail, and goes back once it's read. Hover it for the count. It reads the unread counts Thunderbird keeps in its profile (regular, Flatpak or Snap), every few seconds and right away when Thunderbird shows a new-mail alert, so Thunderbird needs to be running to fetch mail. Click to open Thunderbird.
 
 ## Undo
 
