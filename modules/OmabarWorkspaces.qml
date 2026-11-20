@@ -3,7 +3,7 @@
 // workspaces widget (one block of ten per monitor).
 //
 // Switching workspaces sends a drop of water from the old pill to the new
-// one: it arcs across, sheds small droplets behind it, and splashes into the
+// one: it slides along the row, sheds small droplets behind it, and splashes into the
 // new pill with a ripple. Omarchy's "reduce motion" setting turns it off.
 import QtQuick
 import Quickshell
@@ -201,8 +201,8 @@ Item {
       if (drop.t < 0.08 || drop.t > 0.92) return
       droplet.createObject(fx, {
         cx: drop.cx - drop.dirX * root.dot * 0.6, cy: drop.cy - drop.dirY * root.dot * 0.6,
-        dx: root.vertical ? (Math.random() - 0.5) * 3 : (Math.random() - 0.5) * 2,
-        dy: root.vertical ? (Math.random() - 0.5) * 2 : 2 + Math.random() * 3,
+        dx: root.vertical ? 0 : -drop.dirX * Math.random() * 2,
+        dy: root.vertical ? -drop.dirY * Math.random() * 2 : 0,
         size: root.dot * (0.22 + Math.random() * 0.25),
         life: 420 + Math.random() * 260
       })
@@ -225,9 +225,9 @@ Item {
       readonly property real dirX: root.vertical ? 0 : (end.x >= root.flightStart.x ? 1 : -1)
       readonly property real dirY: root.vertical ? (end.y >= root.flightStart.y ? 1 : -1) : 0
       readonly property real arc: Math.sin(Math.PI * t)
-      readonly property real hop: root.barSize * 0.2
-      readonly property real cx: root.flightStart.x + (end.x - root.flightStart.x) * t - (root.vertical ? hop * arc : 0)
-      readonly property real cy: root.flightStart.y + (end.y - root.flightStart.y) * t - (root.vertical ? 0 : hop * arc)
+      // Slides straight along the row; no hop.
+      readonly property real cx: root.flightStart.x + (end.x - root.flightStart.x) * t
+      readonly property real cy: root.flightStart.y + (end.y - root.flightStart.y) * t
       visible: flight.running
 
       // Body: stretched along the way it travels, rounder at the ends.
