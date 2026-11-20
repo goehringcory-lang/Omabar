@@ -147,10 +147,6 @@ jq -S \
   --arg elsewhen "$elsewhen_id" '
   def obj: if type == "object" then . else {} end;
   . as $old
-  | ($old.bar.layout // {} | obj) as $oldLayout
-  # 12-hour if the old clock was set that way.
-  | ([($oldLayout | to_entries[] | .value | arrays[] | select(.id? == "omarchy.clock" or .id? == "omabar-clock"))][0] // {}) as $clock
-  | (($clock.twelveHour // false) or (($clock.format // "") | test("h|AP|ap"))) as $twelve
   | .version = 1
   | .bar = (.bar | obj)
   | .bar.id = $bar
@@ -165,7 +161,7 @@ jq -S \
       ],
       center: [
         { id: "omabar-player", type: "qml", source: ($dir + "/modules/OmabarPlayer.qml"), player: "spotify", maxWidth: 220 },
-        { id: "omabar-clock", type: "qml", source: ($dir + "/modules/OmabarClock.qml"), twelveHour: $twelve }
+        { id: "omabar-clock", type: "qml", source: ($dir + "/modules/OmabarClock.qml") }
       ],
       centerEnd: (
         [ { id: $elsewhen } ]

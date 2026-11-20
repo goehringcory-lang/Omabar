@@ -5,7 +5,7 @@
 // right-click flips the board to the date and back.
 //
 // Settings (inline on the shell.json entry):
-//   twelveHour - 12-hour time (default false)
+//   twelveHour - 12-hour time with AM/PM beside the tiles (default true)
 //   showDate   - the date as quiet text beside the tiles (default true)
 import QtQuick
 import Quickshell
@@ -24,7 +24,7 @@ Item {
     return v === undefined || v === null ? fallback : v
   }
 
-  readonly property bool twelveHour: setting("twelveHour", false) === true
+  readonly property bool twelveHour: setting("twelveHour", true) !== false
   readonly property bool showDate: setting("showDate", true) !== false
   readonly property bool vertical: bar ? bar.vertical : false
   readonly property int barSize: bar ? bar.barSize : 34
@@ -54,14 +54,16 @@ Item {
     }
     var h = d.getHours()
     if (root.twelveHour) h = h % 12 === 0 ? 12 : h % 12
-    var hh = root.pad(h)
+    // 12-hour time drops the leading zero: 9:47, not 09:47.
+    var hh = root.twelveHour && h < 10 ? " " + h : root.pad(h)
     var mm = root.pad(d.getMinutes())
     return [hh[0], hh[1], ":", mm[0], mm[1]]
   }
 
   readonly property string dateText: {
     var d = clock.date
-    return root.days[d.getDay()] + " " + d.getDate() + " " + root.months[d.getMonth()].charAt(0) + root.months[d.getMonth()].slice(1).toLowerCase()
+    var date = root.days[d.getDay()] + " " + d.getDate() + " " + root.months[d.getMonth()].charAt(0) + root.months[d.getMonth()].slice(1).toLowerCase()
+    return root.twelveHour ? (d.getHours() < 12 ? "AM" : "PM") + "  " + date : date
   }
 
   readonly property int tileHeight: Math.round(barSize * 0.66)
