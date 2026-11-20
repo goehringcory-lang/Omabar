@@ -3,6 +3,7 @@
 #
 #   omabar-setup            use Omabar with its layout (backs up shell.json first)
 #   omabar-setup --restore  put back the shell.json from before the first setup
+#   omabar-setup --doctor   print what is installed and what the shell logged
 #
 # Layout
 #   left    Omarchy menu (accent tile), workspace dots with a water-drop switch
@@ -20,7 +21,10 @@ PLUGIN_ID="goehringcory.omabar"
 PLUGINS_DIR="$HOME/.config/omarchy/plugins"
 PLUGIN_DIR="$PLUGINS_DIR/$PLUGIN_ID"
 CONFIG_FILE="$HOME/.config/omarchy/shell.json"
+OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
+export OMARCHY_PATH
 DEFAULTS_FILE="$OMARCHY_PATH/config/omarchy/shell.json"
+ENGINE_DIR="$PLUGIN_DIR/engine"
 BACKUP_FILE="$HOME/.config/omarchy/shell.json.before-omabar"
 
 fail() {
@@ -29,23 +33,83 @@ fail() {
 }
 
 reload_shell() {
-  omarchy-shell -q shell rescanPlugins >/dev/null 2>&1 || true
+  # Fresh plugin code first, then the config, so a bar the shell gave up on
+  # earlier gets another try.
+  omarchy-shell -q shell reloadPlugins >/dev/null 2>&1 || true
+  sleep 1
   omarchy-shell -q shell reloadConfig >/dev/null 2>&1 || true
+}
+
+shell_log() {
+  journalctl -t omarchy-shell --no-pager "$@" 2>/dev/null || true
+}
+
+# Whether the running shell is drawing Omabar: "true", "false", or "" when the
+# shell can't be asked.
+omabar_active() {
+  omarchy-shell shell listPlugins 2>/dev/null |
+    jq -r --arg id "$PLUGIN_ID" '.[] | select(.id == $id) | .active' 2>/dev/null || true
+}
+
+# Omabar's bar engine is Omarchy's own bar with a glass body. Build it from the
+# Omarchy installed here so it matches this shell; fall back to the copy made
+# from Omarchy 4.5.0 if this Omarchy's bar has moved on from the edits.
+build_engine() {
+  local source_dir="$OMARCHY_PATH/shell/plugins/bar" staged
+  staged=$(mktemp -d "$PLUGIN_DIR/.engine.XXXXXX")
+  if [[ -f $source_dir/Bar.qml ]] && command -v python3 >/dev/null &&
+    python3 "$PLUGIN_DIR/tools/omabar-patch.py" "$source_dir" "$staged" >/dev/null; then
+    echo "Built the bar from your Omarchy ($(omarchy version 2>/dev/null || echo "version unknown"))"
+  else
+    echo "omabar-setup: could not build the bar from $source_dir; using the copy built for Omarchy 4.5.0" >&2
+    cp "$PLUGIN_DIR/prebuilt/OmabarEngine.qml" "$PLUGIN_DIR/prebuilt/BarModel.js" "$staged/"
+  fi
+  rm -rf "$ENGINE_DIR"
+  mv "$staged" "$ENGINE_DIR"
+}
+
+doctor() {
+  echo "== Omarchy"
+  echo "version: $(omarchy version 2>&1 || true)"
+  echo "OMARCHY_PATH: $OMARCHY_PATH"
+  echo "quickshell: $( (qs --version || quickshell --version) 2>/dev/null | head -n1)"
+  echo "shell: $(omarchy-shell shell ping 2>&1 || true)"
+  echo "== Omabar"
+  echo "revision: $(git -C "$PLUGIN_DIR" log -1 --format='%h %s' 2>&1 || true)"
+  echo "local changes: $(git -C "$PLUGIN_DIR" status --porcelain 2>&1 | tr '\n' ' ')"
+  echo "engine: $(ls "$ENGINE_DIR" 2>&1 | tr '\n' ' ')"
+  echo "validate: $(omarchy plugin validate "$PLUGIN_DIR" 2>&1 && echo ok)"
+  echo "patch check: $(python3 "$PLUGIN_DIR/tools/omabar-patch.py" "$OMARCHY_PATH/shell/plugins/bar" "$(mktemp -d)" 2>&1 | tr '\n' ' ')"
+  echo "active in shell: $(omabar_active)"
+  echo "== shell.json"
+  jq -c '.bar | {id, position, background, layout: ((.layout // {}) | map_values(map(.id)))}' "$CONFIG_FILE" 2>&1 || true
+  echo "== plugins"
+  omarchy plugin list 2>&1 | grep -v -E '^omarchy\.' || true
+  echo "== shell log (this boot)"
+  shell_log -b | grep -i -E 'omabar|bar option|falling back|shell\.json|plugin' | tail -n 60
 }
 
 if [[ ${1:-} == "--restore" ]]; then
   [[ -f $BACKUP_FILE ]] || fail "no backup at $BACKUP_FILE"
   cp "$BACKUP_FILE" "$CONFIG_FILE"
-  reload_shell
+  omarchy-shell -q shell reloadConfig >/dev/null 2>&1 || true
   omarchy bar background "$(jq -r '.bar.background // "opaque"' "$CONFIG_FILE")" >/dev/null 2>&1 || true
   echo "Restored your bar from $BACKUP_FILE"
+  exit 0
+fi
+
+if [[ ${1:-} == "--doctor" ]]; then
+  doctor
   exit 0
 fi
 
 [[ -f $PLUGIN_DIR/manifest.json ]] || fail "Omabar isn't installed at $PLUGIN_DIR; run: omarchy plugin add https://github.com/goehringcory-lang/Omabar.git"
 command -v jq >/dev/null || fail "jq is required"
 
+[[ -f $DEFAULTS_FILE ]] || fail "Omarchy's shell isn't at $OMARCHY_PATH (no config/omarchy/shell.json there); Omabar needs Omarchy 4"
+
 mkdir -p "$(dirname "$CONFIG_FILE")" "${XDG_CACHE_HOME:-$HOME/.cache}/omabar"
+build_engine
 if [[ -s $CONFIG_FILE ]]; then
   source_file="$CONFIG_FILE"
 else
@@ -149,6 +213,8 @@ jq -S \
     ))
 ' "$source_file" >"$tmp"
 
+[[ -s $tmp ]] || fail "could not write the new layout; your shell.json is unchanged"
+started=$(date '+%Y-%m-%d %H:%M:%S')
 mv "$tmp" "$CONFIG_FILE"
 trap - EXIT
 reload_shell
@@ -164,7 +230,29 @@ if [[ -n $elsewhen_id && -d $PLUGINS_DIR/$elsewhen_id ]]; then
   omarchy-shell -q shell rescanPlugins >/dev/null 2>&1 || true
 fi
 
-echo "Omabar is on. Undo any time with: $PLUGIN_DIR/bin/omabar-setup --restore"
+# Ask the shell whether it took Omabar. When a bar fails to load the shell
+# quietly keeps the built-in one, so say so here instead.
+if [[ $(omarchy-shell shell ping 2>/dev/null) != "ok" ]]; then
+  echo "Omabar is set up, but the Omarchy shell isn't answering, so it couldn't be checked. Start it with: omarchy restart shell"
+else
+  active=""
+  for _ in $(seq 1 24); do
+    active=$(omabar_active)
+    [[ $active == "true" ]] && break
+    sleep 0.25
+  done
+  if [[ $active != "true" ]]; then
+    {
+      echo "omabar-setup: the shell did not load Omabar and is showing the built-in bar instead."
+      echo "What the shell logged:"
+      shell_log --since "$started" | grep -i -E 'omabar|bar option|falling back|\.qml' | tail -n 40
+      echo "Send that, plus the output of: $PLUGIN_DIR/bin/omabar-setup --doctor"
+      echo "Your old layout: $PLUGIN_DIR/bin/omabar-setup --restore"
+    } >&2
+    exit 1
+  fi
+  echo "Omabar is on. Undo any time with: $PLUGIN_DIR/bin/omabar-setup --restore"
+fi
 has_plugin akitaonrails.ai-usagebar || echo "Tip: add ai-usagebar for per-provider usage, then run this again: omarchy plugin add https://github.com/akitaonrails/ai-usagebar.git"
 has_plugin omaplug || echo "Tip: add Omaplug to manage plugins from the bar, then run this again: omarchy plugin add https://github.com/fross100/omaplug.git"
 has_plugin bobbynicholas.omaland || echo "Tip: add Omaland for a look-and-feel button, then run this again: omarchy plugin add https://github.com/bobby-nicholas/omaland.git"
