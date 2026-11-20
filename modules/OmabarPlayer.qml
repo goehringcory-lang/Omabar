@@ -247,18 +247,26 @@ Item {
       running: root.playing && root.spin && art.visible && !Style.reduceMotion
       onTriggered: art.rotation = (art.rotation + 0.99) % 360
     }
-    // No cover yet: a quiet disc in the accent color.
+    // No cover (Spotify closed, nothing loaded, or an ad): the Spotify logo in
+    // its own green on a dark disc. Another player keeps a plain music note.
     Rectangle {
+      id: blank
+      readonly property bool spotify: root.wanted === "spotify"
       anchors.fill: parent
       radius: width / 2
       visible: cover.status !== Image.Ready
-      color: Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, 0.35)
+      color: spotify
+        ? Qt.rgba(root.base.r * 0.5, root.base.g * 0.5, root.base.b * 0.5, 0.9)
+        : Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, 0.35)
       Text {
         anchors.centerIn: parent
-        text: "\u{F075A}"
-        color: root.ink
+        text: blank.spotify ? "\u{F04C7}" : "\u{F075A}"
+        color: blank.spotify ? "#1ed760" : root.ink
         font.family: root.fontName
-        font.pixelSize: Style.font.iconSmall
+        // The logo fills the disc; the note sits small in the middle.
+        font.pixelSize: blank.spotify ? Math.round(blank.height * 0.82) : Style.font.iconSmall
+        opacity: !blank.spotify || root.hasTrack || discHover.hovered ? 1.0 : 0.85
+        Behavior on opacity { NumberAnimation { duration: Style.duration(140) } }
       }
     }
     // Spindle and rim, so it reads as a disc.
@@ -277,7 +285,7 @@ Item {
       border.color: Qt.rgba(1, 1, 1, 0.18)
     }
 
-    HoverHandler { cursorShape: Qt.PointingHandCursor }
+    HoverHandler { id: discHover; cursorShape: Qt.PointingHandCursor }
     OmabarClickTarget {
       anchors.fill: parent
       bar: root.bar
