@@ -12,7 +12,7 @@ A floating glass bar for [Omarchy](https://omarchy.org) 4. It sits over your des
 
 The player's chevron opens a playlist menu: one-click **Lofi Beats**, **Discover Weekly**, any playlists you pin, and every playlist on your Spotify account once you connect it. With Spotify closed the player rests as a small disc and chevron, so a playlist is still one click away.
 
-**Right:** AI usage (Omarchy's agents panel, plus [ai-usagebar](https://github.com/akitaonrails/ai-usagebar) when installed), notifications, Thunderbird mail (it turns the accent color when new mail arrives in any inbox), Omarchy settings, [Omaland](https://github.com/bobby-nicholas/omaland) when installed, and battery. Bluetooth, Wi-Fi, audio and display stay folded into a drawer that slides open when you hover it.
+**Right:** only five things stay in view: AI usage (Omarchy's agents panel, plus [ai-usagebar](https://github.com/akitaonrails/ai-usagebar) when installed), notifications, Thunderbird mail (it turns the accent color when new mail arrives in any inbox), Omarchy settings, and battery. Everything else is folded into a drawer that slides open when you hover its chevron: [Omaland](https://github.com/bobby-nicholas/omaland) when installed, Bluetooth, Wi-Fi, audio, display and keyboard layout. Drag anything out of the drawer onto the bar to keep it in view.
 
 ## Install
 
@@ -27,7 +27,7 @@ omarchy plugin add https://github.com/goehringcory-lang/Omabar.git
 ~/.config/omarchy/plugins/goehringcory.omabar/bin/omabar-setup
 ```
 
-`omabar-setup` builds the bar from the Omarchy you have installed, backs up `~/.config/omarchy/shell.json` the first time it runs, switches the shell to Omabar, lays out the widgets above, and sets the bar to glassy so Hyprland blurs what's behind it. Widgets from other plugins that you already had on the bar stay where they were. Run it again after installing a companion plugin to add it to the bar, and after an Omarchy update so the bar matches the new shell.
+`omabar-setup` builds the bar from the Omarchy you have installed, backs up `~/.config/omarchy/shell.json` the first time it runs, switches the shell to Omabar, lays out the widgets above, and sets the bar to glassy so Hyprland blurs what's behind it. Setup reads which plugins you have installed and places each plugin's widget exactly once: ai-usagebar beside the agents icon, Omaplug beside the clock, and every other plugin widget in the hover drawer. Nothing from your old layout is carried over, so nothing doubles up. Drag a widget out of the drawer to keep it in view. Run it again after installing a companion plugin to add it to the bar, and after an Omarchy update so the bar matches the new shell.
 
 Setup checks that the shell actually loaded Omabar. If it didn't, it prints what the shell logged instead of leaving you with the built-in bar and no explanation.
 
@@ -74,7 +74,7 @@ Everything is normal Omarchy bar configuration, so you can drag widgets around, 
 
 - **Look:** double-click empty bar space, or run `omarchy bar background opaque|glassy|none`, to switch between solid glass, frosted glass, and clear.
 - **Player:** `omarchy bar set omabar-player player <name>` follows a different MPRIS player, `anyPlayer true` falls back to whatever is playing, `maxWidth 260` gives the track more room, `lofi <link>` points the Lofi button at another playlist, `showIdle false` hides the player while Spotify is closed, and `bulge false` keeps it flat inside the bar. Pin playlists with `omarchy bar set omabar-player playlists '[{"name":"Focus","uri":"spotify:playlist:…"}]' --json`.
-- **Clock:** `omarchy bar set omabar-clock twelveHour true` for 12-hour time, `showDate false` for just the tiles.
+- **Clock:** the clock shows 12-hour time with AM/PM; `omarchy bar set omabar-clock twelveHour false` for 24-hour, `showDate false` for just the tiles.
 - **Motion:** animations follow Omarchy's reduce-motion setting. Everything is drawn by the GPU at your display's refresh rate, antialiased and scaled with mipmaps, so it stays sharp on HiDPI screens.
 - **Workspace dots:** `omarchy bar set omabar-workspaces persistent 7` changes how many dots always show.
 - **Size:** the bar height follows `[bar] size-horizontal` in `~/.config/omarchy/shell.toml`, with a 34px floor.
