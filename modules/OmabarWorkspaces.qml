@@ -21,7 +21,10 @@ Item {
 
   readonly property int slots: 10
   // How many of the monitor's own workspaces always show, used or not.
-  readonly property int persistent: settings && settings.persistent ? Number(settings.persistent) : 5
+  readonly property int persistent: {
+    var n = settings ? Number(settings.persistent) : NaN
+    return isFinite(n) && n >= 1 ? Math.min(Math.floor(n), slots) : 5
+  }
   readonly property bool vertical: bar ? bar.vertical : false
   readonly property int barSize: bar ? bar.barSize : 34
   readonly property color ink: bar ? bar.barForeground : Commons.Color.foreground
@@ -40,7 +43,7 @@ Item {
   property var blocks: ({})
 
   FileView {
-    path: (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/omarchy/monitors/workspaces"
+    path: (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/omarchy/monitor-workspaces"
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
@@ -78,22 +81,34 @@ Item {
     return null
   }
 
+  // The monitor's own first few, and any of the rest that exist. After them
+  // come workspaces that are only visiting: those of an unplugged monitor,
+  // which Hyprland parks on this one.
   readonly property var ids: {
     var base = root.block * root.slots
     var list = []
-    for (var n = 1; n <= Math.min(root.persistent, root.slots); n++) list.push(base + n)
+    var guests = []
+    for (var n = 1; n <= root.persistent; n++) list.push(base + n)
     var values = Hyprland.workspaces.values
     for (var i = 0; i < values.length; i++) {
       var id = values[i].id
-      if (id > 0 && root.blockOf(id) === root.block && list.indexOf(id) === -1) list.push(id)
+      if (id <= 0) continue
+      if (root.blockOf(id) === root.block) {
+        if (list.indexOf(id) === -1) list.push(id)
+      } else if (values[i].monitor && values[i].monitor.name === root.monitorName) {
+        guests.push(id)
+      }
     }
     list.sort(function(a, b) { return a - b })
-    return list
+    guests.sort(function(a, b) { return a - b })
+    return list.concat(guests)
   }
 
   function focusWorkspace(id) {
     if (!root.bar) return
-    var expr = "o.workspaces.focus(" + root.slotOf(id) + ", \"" + root.monitorName + "\")"
+    var expr = root.blockOf(id) === root.block
+      ? "o.workspaces.focus(" + root.slotOf(id) + ", \"" + root.monitorName + "\")"
+      : "hl.dsp.focus({ workspace = \"" + id + "\" })"
     root.bar.run("hyprctl dispatch " + Util.shellQuote(expr))
   }
 
