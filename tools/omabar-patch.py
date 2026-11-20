@@ -170,7 +170,7 @@ def main() -> int:
         return 2
     src = pathlib.Path(sys.argv[1])
     out = pathlib.Path(sys.argv[2])
-    text = (src / "Bar.qml").read_text()
+    text = (src / "Bar.qml").read_text(encoding="utf-8")
     failed = []
     for name, old, new in PATCHES:
         count = text.count(old)
@@ -183,7 +183,7 @@ def main() -> int:
         print("\n".join(failed), file=sys.stderr)
         return 1
     out.mkdir(parents=True, exist_ok=True)
-    (out / "OmabarEngine.qml").write_text(HEADER + text)
+    (out / "OmabarEngine.qml").write_text(HEADER + text, encoding="utf-8")
     shutil.copyfile(src / "BarModel.js", out / "BarModel.js")
     print(f"omabar-patch: wrote {out / 'OmabarEngine.qml'} ({len(PATCHES)} edits)")
     return 0
