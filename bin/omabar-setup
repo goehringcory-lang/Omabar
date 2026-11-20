@@ -12,7 +12,8 @@
 #    manager, sit just right of the clock)
 #   right   AI usage (Omarchy agents, plus ai-usagebar when installed),
 #           notifications, Thunderbird mail, Omarchy settings, the hover
-#           drawer, and battery. The drawer holds Omaland (when installed),
+#           drawer, and battery. The drawer holds every other plugin widget
+#           you have installed (each one once), Omaland,
 #           Bluetooth, Wi-Fi, audio, display and keyboard layout.
 
 set -euo pipefail
@@ -122,7 +123,17 @@ if [[ ! -f $BACKUP_FILE ]]; then
   echo "Backed up your bar config to $BACKUP_FILE"
 fi
 
-has_plugin() { [[ -f $PLUGINS_DIR/$1/manifest.json ]]; }
+# What is installed, read from each plugin's manifest the way the shell's own
+# plugin manager does: [{ id, kinds, clonedFrom }]. Omabar itself is left out.
+installed_plugins() {
+  local manifest
+  for manifest in "$PLUGINS_DIR"/*/manifest.json; do
+    [[ -f $manifest ]] || continue
+    jq -c '{ id: (.id // ""), kinds: (.kinds // []), clonedFrom: (.omarchy.clonedFrom? // "") }' "$manifest" 2>/dev/null || true
+  done | jq -sc --arg self "$PLUGIN_ID" 'map(select(.id != "" and .id != $self))'
+}
+plugins_json=$(installed_plugins)
+has_plugin() { jq -e --arg re "$1" 'any(.[]; .id | test($re; "i"))' <<<"$plugins_json" >/dev/null; }
 
 # Your copy of Omarchy's world clock (Elsewhen), if one exists.
 elsewhen_clone() {
@@ -141,11 +152,19 @@ trap 'rm -f "$tmp"' EXIT
 jq -S \
   --arg bar "$PLUGIN_ID" \
   --arg dir "~/.config/omarchy/plugins/$PLUGIN_ID" \
-  --argjson usagebar "$(has_plugin akitaonrails.ai-usagebar && echo true || echo false)" \
-  --argjson omaland "$(has_plugin bobbynicholas.omaland && echo true || echo false)" \
-  --argjson omaplug "$(has_plugin omaplug && echo true || echo false)" \
+  --argjson plugins "$plugins_json" \
   --arg elsewhen "$elsewhen_id" '
   def obj: if type == "object" then . else {} end;
+  # Bar widgets from plugins you installed, each placed exactly once. Clones of
+  # built-in widgets are skipped: Omabar already draws its own clock,
+  # workspaces and menu, and the shell routes omarchy.* ids to a clone anyway.
+  ($plugins | map(select((.kinds | index("bar-widget")) and .clonedFrom == "") | .id)) as $widgets
+  | ($widgets | map(select(test("ai-usagebar"; "i")))) as $usage
+  | ($widgets | map(select(test("omaplug"; "i")))) as $omaplug
+  | ($widgets - $usage - $omaplug) as $others
+  # Omaland without a bar widget of its own gets a button that opens its panel.
+  | ($plugins | map(select((.id | test("omaland"; "i")) and (.kinds | index("bar-widget") | not)) | .id) | first // "") as $omalandPanel
+  |
   . as $old
   | .version = 1
   | .bar = (.bar | obj)
@@ -165,14 +184,14 @@ jq -S \
       ],
       centerEnd: (
         [ { id: $elsewhen } ]
-        + (if $omaplug then [ { id: "omaplug" } ] else [] end)
+        + ($omaplug | map({ id: . }))
         + [ { id: "omarchy.system-update" } ]
       ),
       # Always in view: AI usage, notifications, mail, settings, battery. The rest
       # waits in the hover drawer (tray).
       right: (
         [ { id: "omarchy.agents" } ]
-        + (if $usagebar then [ { id: "akitaonrails.ai-usagebar" } ] else [] end)
+        + ($usage | map({ id: . }))
         + [
             { id: "omabar-notifications", type: "command",
               exec: ($dir + "/bin/omabar-notifications status"), interval: 5,
@@ -186,9 +205,10 @@ jq -S \
           ]
       ),
       tray: (
-        (if $omaland then [ { id: "omabar-omaland", type: "command", text: "󰏘",
+        (if $omalandPanel != "" then [ { id: "omabar-omaland", type: "command", text: "󰏘",
               tooltip: "Omaland: Hyprland look and feel",
-              onClick: "omarchy-shell shell toggle bobbynicholas.omaland {}" } ] else [] end)
+              onClick: ("omarchy-shell shell toggle " + $omalandPanel + " {}") } ] else [] end)
+        + ($others | map({ id: . }))
         + [
             { id: "omarchy.bluetooth" },
             { id: "omarchy.network" },
@@ -243,6 +263,6 @@ else
   fi
   echo "Omabar is on. Undo any time with: $PLUGIN_DIR/bin/omabar-setup --restore"
 fi
-has_plugin akitaonrails.ai-usagebar || echo "Tip: add ai-usagebar for per-provider usage, then run this again: omarchy plugin add https://github.com/akitaonrails/ai-usagebar.git"
+has_plugin ai-usagebar || echo "Tip: add ai-usagebar for per-provider usage, then run this again: omarchy plugin add https://github.com/akitaonrails/ai-usagebar.git"
 has_plugin omaplug || echo "Tip: add Omaplug to manage plugins from the bar, then run this again: omarchy plugin add https://github.com/fross100/omaplug.git"
-has_plugin bobbynicholas.omaland || echo "Tip: add Omaland for a look-and-feel button, then run this again: omarchy plugin add https://github.com/bobby-nicholas/omaland.git"
+has_plugin omaland || echo "Tip: add Omaland for a look-and-feel button, then run this again: omarchy plugin add https://github.com/bobby-nicholas/omaland.git"
