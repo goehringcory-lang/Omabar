@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "goehringcory.omabar",
+  "name": "Omabar",
+  "version": "0.1.0",
+  "author": "Cory Goehring",
+  "license": "MIT",
+  "description": "A floating glass-pill bar for Omarchy: workspace dots, a Spotify mini player, AI usage, and a hover drawer for system controls. Follows your Omarchy theme.",
+  "kinds": ["bar"],
+  "entryPoints": {
+    "bar": "Bar.qml"
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.bar"
+  }
+}

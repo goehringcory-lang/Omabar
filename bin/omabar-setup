@@ -1,0 +1,145 @@
+#!/bin/bash
+# Switch the Omarchy shell to Omabar and lay out its widgets.
+#
+#   omabar-setup            use Omabar with its layout (backs up shell.json first)
+#   omabar-setup --restore  put back the shell.json from before the first setup
+#
+# Layout
+#   left    Omarchy menu, workspace dots
+#   center  quick indicators, Spotify mini player, clock
+#   (omaplug, the plugin manager, sits just right of the clock when installed)
+#   right   AI usage (Omarchy agents, plus ai-usagebar when installed),
+#           notifications, Omarchy settings, Omaland (when installed),
+#           a hover drawer holding Bluetooth, Wi-Fi, audio and display,
+#           and battery/power
+
+set -euo pipefail
+
+PLUGIN_ID="goehringcory.omabar"
+PLUGINS_DIR="$HOME/.config/omarchy/plugins"
+PLUGIN_DIR="$PLUGINS_DIR/$PLUGIN_ID"
+CONFIG_FILE="$HOME/.config/omarchy/shell.json"
+DEFAULTS_FILE="$OMARCHY_PATH/config/omarchy/shell.json"
+BACKUP_FILE="$HOME/.config/omarchy/shell.json.before-omabar"
+
+fail() {
+  echo "omabar-setup: $*" >&2
+  exit 1
+}
+
+reload_shell() {
+  omarchy-shell -q shell rescanPlugins >/dev/null 2>&1 || true
+  omarchy-shell -q shell reloadConfig >/dev/null 2>&1 || true
+}
+
+if [[ ${1:-} == "--restore" ]]; then
+  [[ -f $BACKUP_FILE ]] || fail "no backup at $BACKUP_FILE"
+  cp "$BACKUP_FILE" "$CONFIG_FILE"
+  reload_shell
+  omarchy bar background "$(jq -r '.bar.background // "opaque"' "$CONFIG_FILE")" >/dev/null 2>&1 || true
+  echo "Restored your bar from $BACKUP_FILE"
+  exit 0
+fi
+
+[[ -f $PLUGIN_DIR/manifest.json ]] || fail "Omabar isn't installed at $PLUGIN_DIR; run: omarchy plugin add https://github.com/goehringcory-lang/Omabar.git"
+command -v jq >/dev/null || fail "jq is required"
+
+mkdir -p "$(dirname "$CONFIG_FILE")"
+if [[ -s $CONFIG_FILE ]]; then
+  source_file="$CONFIG_FILE"
+else
+  source_file="$DEFAULTS_FILE"
+fi
+
+# Keep the very first backup, so running setup twice can still restore the original.
+if [[ ! -f $BACKUP_FILE ]]; then
+  cp "$source_file" "$BACKUP_FILE"
+  echo "Backed up your bar config to $BACKUP_FILE"
+fi
+
+has_plugin() { [[ -f $PLUGINS_DIR/$1/manifest.json ]]; }
+
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+
+jq -S \
+  --arg bar "$PLUGIN_ID" \
+  --arg dir "~/.config/omarchy/plugins/$PLUGIN_ID" \
+  --argjson usagebar "$(has_plugin akitaonrails.ai-usagebar && echo true || echo false)" \
+  --argjson omaland "$(has_plugin bobbynicholas.omaland && echo true || echo false)" \
+  --argjson omaplug "$(has_plugin omaplug && echo true || echo false)" '
+  def obj: if type == "object" then . else {} end;
+  . as $old
+  | ($old.bar.layout // {} | obj) as $oldLayout
+  # Keep a clock the user already tuned; otherwise a short one that suits the pill.
+  | ([($oldLayout | to_entries[] | .value | arrays[] | select(.id? == "omarchy.clock"))][0]
+      // { id: "omarchy.clock" }) as $clock
+  | .version = 1
+  | .bar = (.bar | obj)
+  | .bar.id = $bar
+  | .bar.background = "glassy"
+  | .bar.layout = {
+      left: [
+        { id: "omarchy.menu" },
+        { id: "omabar-workspaces", type: "qml", source: ($dir + "/modules/OmabarWorkspaces.qml"), persistent: 5 }
+      ],
+      centerBegin: [
+        { id: "omarchy.indicators" }
+      ],
+      center: [
+        { id: "omabar-player", type: "qml", source: ($dir + "/modules/OmabarPlayer.qml"), player: "spotify", maxWidth: 220 },
+        ($clock + { format: "HH:mm  ddd d MMM" })
+      ],
+      centerEnd: (
+        (if $omaplug then [ { id: "omaplug" } ] else [] end)
+        + [ { id: "omarchy.system-update" } ]
+      ),
+      right: (
+        [ { id: "omarchy.agents" } ]
+        + (if $usagebar then [ { id: "akitaonrails.ai-usagebar" } ] else [] end)
+        + [
+            { id: "omabar-notifications", type: "command",
+              exec: ($dir + "/bin/omabar-notifications status"), interval: 5,
+              onClick: ($dir + "/bin/omabar-notifications history"),
+              onRightClick: ($dir + "/bin/omabar-notifications dnd") },
+            { id: "omabar-settings", type: "command", text: "󰒓",
+              tooltip: "Omarchy settings", onClick: "omarchy-menu toggle setup" }
+          ]
+        + (if $omaland then [ { id: "omabar-omaland", type: "command", text: "󰏘",
+              tooltip: "Omaland: Hyprland look and feel",
+              onClick: "omarchy-shell shell toggle bobbynicholas.omaland {}" } ] else [] end)
+        + [
+            { id: "omarchy.tray" },
+            { id: "omarchy.keyboard-layout" },
+            { id: "omarchy.power" }
+          ]
+      ),
+      tray: [
+        { id: "omarchy.bluetooth" },
+        { id: "omarchy.network" },
+        { id: "omarchy.audio" },
+        { id: "omarchy.monitor" }
+      ]
+    }
+  # Widgets from other plugins you had on the bar stay, in the same section.
+  | .bar.layout as $new
+  | ([$new[][] | .id]) as $placed
+  | .bar.layout = ($new | with_entries(
+      .key as $section
+      | .value += [ ($oldLayout[$section] // [] | arrays[])
+          | select((.id? // "") as $id
+              | ($id | startswith("omarchy.") | not)
+              and ($id | startswith("omabar-") | not)
+              and ($placed | index($id) | not)) ]
+    ))
+' "$source_file" >"$tmp"
+
+mv "$tmp" "$CONFIG_FILE"
+trap - EXIT
+reload_shell
+omarchy bar background glassy >/dev/null 2>&1 || true
+
+echo "Omabar is on. Undo any time with: $PLUGIN_DIR/bin/omabar-setup --restore"
+has_plugin akitaonrails.ai-usagebar || echo "Tip: add ai-usagebar for per-provider usage, then run this again: omarchy plugin add https://github.com/akitaonrails/ai-usagebar.git"
+has_plugin omaplug || echo "Tip: add Omaplug to manage plugins from the bar, then run this again: omarchy plugin add https://github.com/fross100/omaplug.git"
+has_plugin bobbynicholas.omaland || echo "Tip: add Omaland for a look-and-feel button, then run this again: omarchy plugin add https://github.com/bobby-nicholas/omaland.git"
