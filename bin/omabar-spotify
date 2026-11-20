@@ -25,8 +25,10 @@ import hashlib
 import http.server
 import json
 import os
+import random
 import re
 import secrets
+import shlex
 import shutil
 import subprocess
 import sys
@@ -45,10 +47,10 @@ CACHE_SECONDS = 600
 
 REDIRECT_PORT = 8898
 REDIRECT_URI = f"http://127.0.0.1:{REDIRECT_PORT}/callback"
-# The playback scopes are only used to start Liked Songs when Spotify's own
-# MPRIS interface won't (see cmd_liked).
+# The playback and library scopes are only used to start Liked Songs, which
+# Spotify's own MPRIS interface opens but doesn't play (see cmd_liked).
 PLAY_SCOPE = "user-modify-playback-state"
-SCOPES = f"playlist-read-private playlist-read-collaborative user-read-playback-state {PLAY_SCOPE}"
+SCOPES = f"playlist-read-private playlist-read-collaborative user-library-read user-read-playback-state {PLAY_SCOPE}"
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
@@ -225,32 +227,120 @@ def api_send(method, url, token, body=None):
         return 200 <= response.status < 300
 
 
-def web_play_liked(shuffle):
-    """Start Liked Songs through the Web API (Spotify Premium, and a login made
-    since Omabar began asking for playback access). False when it can't."""
+def can_play():
+    """Whether the saved login lets Omabar control playback."""
+    token = read_json(TOKEN_FILE)
+    return isinstance(token, dict) and bool(client_id()) and PLAY_SCOPE in str(token.get("scope", ""))
+
+
+def premium_needed(error):
     try:
-        token = access_token()
-        if not token or PLAY_SCOPE not in str((read_json(TOKEN_FILE) or {}).get("scope", "")):
-            return False
-        auth = {"Authorization": f"Bearer {token}"}
-        user = api_request("https://api.spotify.com/v1/me", headers=auth).get("id")
-        devices = api_request("https://api.spotify.com/v1/me/player/devices", headers=auth).get("devices") or []
-        here = [d for d in devices if d.get("type") == "Computer" and d.get("id")] or [d for d in devices if d.get("id")]
-        if not user or not here:
-            return False
-        device = urllib.parse.quote(here[0]["id"])
-        if shuffle:
-            try:
-                api_send("PUT", f"https://api.spotify.com/v1/me/player/shuffle?state=true&device_id={device}", token)
-            except (urllib.error.URLError, OSError):
-                pass
-        return api_send("PUT", f"https://api.spotify.com/v1/me/player/play?device_id={device}", token,
-                        {"context_uri": f"spotify:user:{user}:collection"})
-    except (NeedsLogin, urllib.error.URLError, OSError, ValueError, KeyError, TypeError, AttributeError):
+        return "PREMIUM_REQUIRED" in error.read().decode("utf-8", "replace")
+    except (OSError, ValueError):
         return False
 
 
-def cmd_liked(shuffle=True):
+def this_device(auth):
+    """The Spotify app on this computer, as the Web API names it. A just-started
+    app takes a few seconds to appear."""
+    for _ in range(8):
+        devices = api_request("https://api.spotify.com/v1/me/player/devices", headers=auth).get("devices") or []
+        usable = [d for d in devices if d.get("id") and not d.get("is_restricted")]
+        here = [d for d in usable if d.get("type") == "Computer"] or usable
+        if here:
+            return here[0]["id"]
+        time.sleep(1)
+    return ""
+
+
+def liked_uris(auth, shuffle):
+    """Up to 200 of your Liked Songs: the newest, or with shuffle a random
+    spread across the whole library in random order."""
+    first = api_request("https://api.spotify.com/v1/me/tracks?limit=50", headers=auth)
+    total = int(first.get("total") or 0)
+    offsets = list(range(50, total, 50))
+    if shuffle:
+        random.shuffle(offsets)
+    pages = [first] + [api_request(f"https://api.spotify.com/v1/me/tracks?limit=50&offset={offset}", headers=auth)
+                       for offset in offsets[:3]]
+    uris = [(item.get("track") or {}).get("uri") for page in pages for item in page.get("items") or [] if item]
+    uris = [uri for uri in uris if uri and uri.startswith("spotify:track:")]
+    if shuffle:
+        random.shuffle(uris)
+    return uris
+
+
+def web_play_liked(shuffle):
+    """Start Liked Songs through the Web API. Returns "ok", "login" (the saved
+    login can't control playback), "premium" (Spotify only allows this with
+    Premium), "device" (the app isn't showing up) or "failed"."""
+    try:
+        if not can_play():
+            return "login"
+        token = access_token()
+        if not token:
+            return "login"
+        auth = {"Authorization": f"Bearer {token}"}
+        device = urllib.parse.quote(this_device(auth))
+        if not device:
+            return "device"
+        play = f"https://api.spotify.com/v1/me/player/play?device_id={device}"
+        try:
+            # Liked Songs as Spotify itself plays it: the whole library.
+            user = api_request("https://api.spotify.com/v1/me", headers=auth).get("id") or ""
+            if not user:
+                raise ValueError("no user id")
+            if shuffle:
+                try:
+                    api_send("PUT", f"https://api.spotify.com/v1/me/player/shuffle?state=true&device_id={device}", token)
+                except urllib.error.HTTPError as error:
+                    if premium_needed(error):
+                        return "premium"
+            api_send("PUT", play, token, {"context_uri": f"spotify:user:{user}:collection"})
+            if shuffle:
+                # Shuffle set on an idle app may not have counted for the first
+                # song, so set it again now and move off the top of the list.
+                try:
+                    time.sleep(1)
+                    api_send("PUT", f"https://api.spotify.com/v1/me/player/shuffle?state=true&device_id={device}", token)
+                    api_send("POST", f"https://api.spotify.com/v1/me/player/next?device_id={device}", token)
+                except (urllib.error.URLError, OSError):
+                    pass
+            return "ok"
+        except urllib.error.HTTPError as error:
+            if error.code in (401, 403) and premium_needed(error):
+                return "premium"
+            if error.code == 401:
+                return "login"
+        except ValueError:
+            pass
+        # Spotify wouldn't take Liked Songs as a whole: send the songs themselves.
+        uris = liked_uris(auth, shuffle)
+        if not uris:
+            return "failed"
+        api_send("PUT", play, token, {"uris": uris})
+        return "ok"
+    except NeedsLogin:
+        return "login"
+    except urllib.error.HTTPError as error:
+        if premium_needed(error):
+            return "premium"
+        return "login" if error.code in (401, 403) else "failed"
+    except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError, AttributeError):
+        return "failed"
+
+
+def ask_for_playback(shuffle):
+    """Open the one-time approval in a terminal; it starts Liked Songs when done."""
+    if not shutil.which("omarchy-launch-floating-terminal-with-presentation"):
+        return False
+    command = [os.path.realpath(__file__), "login", "--then-liked"] + ([] if shuffle else ["--no-shuffle"])
+    subprocess.Popen(["omarchy-launch-floating-terminal-with-presentation", shlex.join(command)],
+                     start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return True
+
+
+def cmd_liked(shuffle=True, may_ask=True):
     lock = single_play()
     if lock is None:
         return 0
@@ -258,11 +348,17 @@ def cmd_liked(shuffle=True):
     if not spotify_running():
         open_web(LIKED_WEB)
         return 0
+
+    # With playback access, your Spotify account starts them directly.
+    outcome = web_play_liked(shuffle)
+    if outcome == "ok":
+        return 0
+
+    # Otherwise ask the app. Most versions only show the Liked Songs page, so
+    # check that it is playing and, if it already was, has moved to another song.
     was_playing, was_track = playback_status() == "Playing", track_id()
 
     def started():
-        # Spotify may only show the Liked Songs page. It has started them when
-        # it is playing and, if it already was, has moved to another song.
         return playback_status() == "Playing" and not (was_playing and track_id() == was_track)
 
     if shuffle:
@@ -273,10 +369,17 @@ def cmd_liked(shuffle=True):
             time.sleep(2.5)
             if started():
                 return 0
-    if web_play_liked(shuffle):
-        return 0
-    notify("Liked Songs is open, but Spotify didn't start it from the bar. Press play there. "
-           "If you have Premium, running omabar-spotify login once more lets Omabar start it for you.")
+
+    if outcome == "premium":
+        notify("Liked Songs is open. Starting it from the bar needs Spotify Premium, so press play there.")
+    elif outcome == "login" and may_ask and ask_for_playback(shuffle):
+        pass  # the terminal takes it from here
+    elif outcome == "login":
+        notify("Liked Songs is open. To let Omabar start it, run: omabar-spotify login")
+    elif outcome == "device":
+        notify("Liked Songs is open, but Spotify's servers don't see the app on this computer yet. Try again in a moment.")
+    else:
+        notify("Liked Songs is open, but Spotify didn't start it from the bar. Press play there.")
     return 1
 
 
@@ -287,8 +390,12 @@ def client_id():
     return (app or {}).get("client_id", "")
 
 
-def cmd_login():
+def cmd_login(then_liked=False, shuffle=True):
     cid = client_id()
+    if then_liked:
+        print("Spotify opens your Liked Songs from the bar but won't start them without your say-so.")
+        print("Approve once in the browser and the Liked Songs button will start them from then on.")
+        print("Starting playback this way needs Spotify Premium.\n")
     if not cid:
         print("To list your playlists, Omabar needs a Spotify app of your own (free, two minutes):\n")
         print("  1. Open https://developer.spotify.com/dashboard and create an app.")
@@ -365,6 +472,11 @@ def cmd_login():
     except OSError:
         pass
     print("Connected. Your playlists will show in the Omabar player.")
+    if then_liked:
+        print("Starting your Liked Songs…")
+        if cmd_liked(shuffle, may_ask=False) != 0:
+            print("Spotify didn't start them. See the notification for why.")
+            return 1
     return 0
 
 
@@ -394,6 +506,8 @@ def access_token(force=False):
     if not fresh.get("access_token"):
         raise NeedsLogin()
     fresh.setdefault("refresh_token", token["refresh_token"])
+    if token.get("scope"):
+        fresh.setdefault("scope", token["scope"])   # what the login was approved for
     fresh["expires_at"] = time.time() + fresh.get("expires_in", 3600) - 60
     write_private(TOKEN_FILE, fresh)
     return fresh["access_token"]
@@ -510,7 +624,7 @@ def main(argv):
     if command == "playlists":
         return cmd_playlists()
     if command == "login":
-        return cmd_login()
+        return cmd_login("--then-liked" in argv[2:], "--no-shuffle" not in argv[2:])
     if command == "set-discover-weekly":
         return cmd_set_discover(argv[2] if len(argv) > 2 else None)
     if command == "status":

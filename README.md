@@ -58,6 +58,8 @@ Lofi Beats and your pinned playlists work right away. To list every playlist on 
 
 Discover Weekly is a different playlist for every account, so the menu asks for your link the first time you click it.
 
+Liked Songs isn't a playlist, and the Spotify app only opens its page when asked from outside; it doesn't start playing. So the first click on **Liked Songs** opens a terminal that asks you to approve playback control for your Spotify app once in the browser. From then on the button turns shuffle on and starts your Liked Songs on this computer through the Spotify Web API. Spotify only allows that with Premium; without it the button opens Liked Songs and a notification says why it didn't start.
+
 ### Google Calendar
 
 The clock's drop-down shows the month, colored dots for days with events, and the agenda for the day you pick. To fill it, open it and choose **Connect Google Calendar** (or run `~/.config/omarchy/plugins/goehringcory.omabar/bin/omabar-gcal connect`). No Google Cloud setup is needed:

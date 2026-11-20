@@ -158,7 +158,9 @@ class LikedSongs(unittest.TestCase):
         sp.track_id = lambda: self.track
         sp.set_shuffle = lambda on: self.sent.append(("shuffle", on)) or True
         sp.notify = self.told.append
-        sp.web_play_liked = lambda shuffle: False
+        self.web, self.asked = "login", []
+        sp.web_play_liked = lambda shuffle: self.web
+        sp.ask_for_playback = lambda shuffle: self.asked.append(shuffle) or True
 
         def open_uri(uri):
             self.sent.append(uri)
@@ -183,25 +185,90 @@ class LikedSongs(unittest.TestCase):
         self.assertEqual(self.sp.cmd_liked(), 0)
         self.assertEqual(self.sent[1:], ["spotify:collection:tracks", "spotify:collection"])
 
-    def test_a_song_that_was_already_playing_does_not_count(self):
+    def test_account_starts_them_without_touching_the_app(self):
+        self.web = "ok"
+        self.assertEqual(self.sp.cmd_liked(), 0)
+        self.assertEqual((self.sent, self.told, self.asked), ([], [], []))
+
+    def test_page_only_asks_once_for_playback_access(self):
         self.status = "Playing"     # Spotify only shows the page and keeps playing
         self.assertEqual(self.sp.cmd_liked(), 1)
+        self.assertEqual((self.asked, self.told), ([True], []))
+
+    def test_after_the_approval_it_does_not_ask_again(self):
+        self.assertEqual(self.sp.cmd_liked(may_ask=False), 1)
+        self.assertEqual(self.asked, [])
         self.assertEqual(len(self.told), 1)
 
-    def test_falls_back_to_the_web_api(self):
-        self.sp.web_play_liked = lambda shuffle: True
-        self.assertEqual(self.sp.cmd_liked(), 0)
-        self.assertEqual(self.told, [])
+    def test_premium_is_named(self):
+        self.web = "premium"
+        self.assertEqual(self.sp.cmd_liked(), 1)
+        self.assertEqual(self.asked, [])
+        self.assertIn("Premium", self.told[0])
 
-    def test_web_api_needs_a_login_with_playback_access(self):
-        sp = load()
+
+class LikedSongsWebApi(unittest.TestCase):
+    def setUp(self):
+        self.sp = sp = load()
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
         sp.TOKEN_FILE = os.path.join(self.dir.name, "token")
         sp.APP_FILE = os.path.join(self.dir.name, "app")
+        sp.time.sleep = lambda seconds: None
         sp.write_private(sp.APP_FILE, {"client_id": "a" * 32})
-        sp.write_private(sp.TOKEN_FILE, {"access_token": "t", "refresh_token": "r", "expires_at": time.time() + 999,
-                                         "scope": "playlist-read-private"})
-        sp.api_request = lambda *a, **k: self.fail("must not call Spotify without playback access")
-        self.assertFalse(sp.web_play_liked(True))
+        self.sends = []
+        self.refuse = {}            # path fragment -> HTTP code
+        self.reason = "{}"
+
+        def api_request(url, data=None, headers=None):
+            if url.endswith("/me"):
+                return {"id": "cory"}
+            if "devices" in url:
+                return {"devices": [{"id": "phone", "type": "Smartphone"}, {"id": "t480", "type": "Computer"}]}
+            if "/me/tracks" in url:
+                return {"total": 2, "items": [{"track": {"uri": "spotify:track:1"}}, {"track": {"uri": "spotify:track:2"}},
+                                              {"track": None}, {"track": {"uri": "spotify:local:x"}}]}
+            self.fail("unexpected " + url)
+        sp.api_request = api_request
+
+        def api_send(method, url, token, body=None):
+            for fragment, code in self.refuse.items():
+                if fragment in url and (fragment != "/play" or "context_uri" in (body or {})):
+                    raise urllib.error.HTTPError(url, code, "no", {}, io.BytesIO(self.reason.encode()))
+            self.sends.append((method, url.split("/v1/me/player/")[1].split("?")[0], body))
+            return True
+        sp.api_send = api_send
+
+    def login(self, scope):
+        self.sp.write_private(self.sp.TOKEN_FILE, {"access_token": "t", "refresh_token": "r",
+                                                   "expires_at": time.time() + 999, "scope": scope})
+
+    def test_needs_a_login_with_playback_access(self):
+        self.login("playlist-read-private")
+        self.sp.api_request = lambda *a, **k: self.fail("must not call Spotify without playback access")
+        self.assertEqual(self.sp.web_play_liked(True), "login")
+
+    def test_plays_the_whole_library_on_this_computer_with_shuffle(self):
+        self.login(self.sp.SCOPES)
+        self.assertEqual(self.sp.web_play_liked(True), "ok")
+        self.assertEqual(self.sends[:2], [("PUT", "shuffle", None),
+                                          ("PUT", "play", {"context_uri": "spotify:user:cory:collection"})])
+
+    def test_without_shuffle_only_play_is_sent(self):
+        self.login(self.sp.SCOPES)
+        self.assertEqual(self.sp.web_play_liked(False), "ok")
+        self.assertEqual(self.sends, [("PUT", "play", {"context_uri": "spotify:user:cory:collection"})])
+
+    def test_sends_the_songs_when_the_library_as_a_whole_is_refused(self):
+        self.login(self.sp.SCOPES)
+        self.refuse = {"/play": 400}
+        self.assertEqual(self.sp.web_play_liked(False), "ok")
+        self.assertEqual(self.sends, [("PUT", "play", {"uris": ["spotify:track:1", "spotify:track:2"]})])
+
+    def test_premium_required(self):
+        self.login(self.sp.SCOPES)
+        self.refuse, self.reason = {"/play": 403, "/shuffle": 403}, '{"error": {"reason": "PREMIUM_REQUIRED"}}'
+        self.assertEqual(self.sp.web_play_liked(True), "premium")
 
 
 if __name__ == "__main__":
