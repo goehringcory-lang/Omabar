@@ -247,7 +247,7 @@ if [[ ${1:-} == "--rebuild" ]]; then
   exit
 fi
 
-mkdir -p "$(dirname "$CONFIG_FILE")" "${XDG_CACHE_HOME:-$HOME/.cache}/omabar"
+mkdir -p "$(dirname "$CONFIG_FILE")" "${XDG_CACHE_HOME:-$HOME/.cache}/omabar" "${XDG_CONFIG_HOME:-$HOME/.config}/omabar"
 build_engine
 
 # The layout to start from: yours, or Omarchy's when you have none the shell
@@ -282,7 +282,7 @@ installed_plugins() {
   for manifest in "$PLUGINS_DIR"/*/manifest.json; do
     [[ -f $manifest ]] || continue
     jq -c '{ id: (.id // ""), kinds: (.kinds // []), clonedFrom: (.omarchy.clonedFrom? // "") }' "$manifest" 2>/dev/null || true
-  done | jq -sc --arg self "$PLUGIN_ID" 'map(select(.id != "" and .id != $self))'
+  done | jq -sc --arg self "$PLUGIN_ID" 'map(select(.id != "" and .id != $self)) | unique_by(.id)'
 }
 plugins_json=$(installed_plugins)
 has_plugin() { jq -e --arg re "$1" 'any(.[]; .id | test($re; "i"))' <<<"$plugins_json" >/dev/null; }
@@ -362,10 +362,7 @@ jq -S \
           { id: "omarchy.agents" } ]
         + ($usage | map({ id: . }))
         + [
-            { id: "omabar-notifications", type: "command",
-              exec: ($dir + "/bin/omabar-notifications status"), interval: 5,
-              onClick: ($dir + "/bin/omabar-notifications history"),
-              onRightClick: ($dir + "/bin/omabar-notifications dnd") },
+            { id: "omabar-notifications", type: "qml", source: ($dir + "/modules/OmabarNotifications.qml") },
             { id: "omabar-mail", type: "qml", source: ($dir + "/modules/OmabarMail.qml"), app: "thunderbird" },
             { id: "omabar-settings", type: "command", text: "󰒓",
               tooltip: "Omarchy settings", onClick: "omarchy-menu toggle setup" },
@@ -386,6 +383,9 @@ jq -S \
           ]
       )
     }
+  # Omaland opens from its drawer button only while the shell has it loaded.
+  | if $omalandPanel != "" and (((.plugins // []) | map(objects | .id) | index($omalandPanel)) == null)
+    then .plugins = ((.plugins // []) + [ { id: $omalandPanel } ]) else . end
   # No widget is carried over from the old layout: leftovers (clones of the
   # built-in clock or workspaces, older custom modules) would double up with
   # the Omabar ones. The old layout is kept in the backup.

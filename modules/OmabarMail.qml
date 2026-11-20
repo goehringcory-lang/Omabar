@@ -49,6 +49,8 @@ Item {
             .filter(function(file) { return file !== "" })
           if (files.join("\n") !== root.inboxFiles.join("\n")) root.inboxFiles = files
           if (root.unread > before) pulse.restart()
+          // Read somewhere else (a phone, webmail): nothing is left to light up for.
+          else if (root.unread === 0 && before > 0) root.clear()
         } catch (e) {}
       }
     }
