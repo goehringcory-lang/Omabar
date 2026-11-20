@@ -23,8 +23,22 @@ Item {
   signal openEvent(string link)
   signal monthShown(int year, int month)   // month is 1-12
 
+  // 12-hour times in the agenda, like the clock above it.
+  property bool twelveHour: true
+  // First column of the grid: 0 Sunday … 6 Saturday; -1 follows the system's region.
+  property int weekStart: -1
+  readonly property int firstDay: {
+    if (card.weekStart >= 0 && card.weekStart <= 6) return card.weekStart
+    var day = Number(Qt.locale().firstDayOfWeek)
+    return day >= 0 && day <= 6 ? day : 1
+  }
+
   readonly property var monthNames: ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
-  readonly property var dayLetters: ["M", "T", "W", "T", "F", "S", "S"]
+  readonly property var dayLetters: {
+    var letters = ["S", "M", "T", "W", "T", "F", "S"], out = []
+    for (var i = 0; i < 7; i++) out.push(letters[(card.firstDay + i) % 7])
+    return out
+  }
 
   property date today: new Date()
   property int viewYear: today.getFullYear()
@@ -50,11 +64,14 @@ Item {
   // ── dates ──────────────────────────────────────────────────────────────
   function parseWhen(value, allDay) {
     if (!value) return null
+    var d
     if (allDay) {
-      var p = String(value).split("-")
-      return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]))
+      var p = String(value).slice(0, 10).split("-")
+      d = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]))
+    } else {
+      d = new Date(value)
     }
-    return new Date(value)
+    return isNaN(d.getTime()) ? null : d
   }
 
   function dayKey(d) { return d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate() }
@@ -74,7 +91,7 @@ Item {
       if (!start) continue
       var day = new Date(start.getFullYear(), start.getMonth(), start.getDate())
       // All-day ends are exclusive; timed events end the moment they end.
-      var last = end ? new Date(end.getTime() - (e.allDay ? 1 : 1000)) : start
+      var last = end && end > start ? new Date(end.getTime() - (e.allDay ? 1 : 1000)) : start
       for (var n = 0; n < 62 && day <= last; n++) {
         var key = card.dayKey(day)
         if (!map[key]) map[key] = []
@@ -90,28 +107,47 @@ Item {
     return map
   }
 
-  // 42 cells, Monday first.
+  // 42 cells, starting on the region's first day of the week.
   readonly property var cells: {
     var first = new Date(card.viewYear, card.viewMonth, 1)
-    var offset = (first.getDay() + 6) % 7
+    var offset = (first.getDay() - card.firstDay + 7) % 7
     var out = []
     for (var i = 0; i < 42; i++) out.push(new Date(card.viewYear, card.viewMonth, 1 - offset + i))
     return out
   }
 
-  function timeLabel(e) {
+  function clockText(d) {
+    return card.twelveHour ? Qt.formatTime(d, "h:mm AP") : Qt.formatTime(d, "HH:mm")
+  }
+
+  // When an event happens on the given day: its start time on the day it
+  // starts, "until …" on the day it ends, "All day" on the days between.
+  function timeLabel(e, day) {
     if (e.allDay) return "All day"
-    var d = new Date(e.start)
-    return Qt.formatTime(d, "HH:mm")
+    var start = card.parseWhen(e.start, false)
+    var end = card.parseWhen(e.end, false)
+    if (!start) return ""
+    if (card.sameDay(start, day)) {
+      if (end && end > start && card.sameDay(end, day)) return card.clockText(start) + " – " + card.clockText(end)
+      return card.clockText(start)
+    }
+    if (end && card.sameDay(end, day)) return "Until " + card.clockText(end)
+    return "All day"
+  }
+
+  function startMs(e) {
+    var d = card.parseWhen(e.start, e.allDay)
+    return d ? d.getTime() : 0
   }
 
   readonly property var agenda: {
     var list = card.byDay[card.dayKey(card.selected)] || []
     return list.slice().sort(function(a, b) {
       if (a.allDay !== b.allDay) return a.allDay ? -1 : 1
-      return String(a.start).localeCompare(String(b.start))
+      return card.startMs(a) - card.startMs(b) || String(a.title).localeCompare(String(b.title))
     })
   }
+  readonly property int agendaRows: 6
 
   readonly property string agendaTitle: {
     if (card.sameDay(card.selected, card.today)) return "Today"
@@ -276,7 +312,7 @@ Item {
         wrapMode: Text.WordWrap
         maximumLineCount: 3
         elide: Text.ElideRight
-        text: card.loading ? "Loading…" : (card.error ? "Couldn't reach Google Calendar: " + card.error : "Nothing scheduled")
+        text: card.loading ? "Loading…" : "Nothing scheduled"
         color: card.ink
         opacity: 0.45
         font.family: card.fontName
@@ -286,7 +322,7 @@ Item {
       }
 
       Repeater {
-        model: card.agenda.slice(0, 6)
+        model: card.agenda.slice(0, card.agendaRows)
         Rectangle {
           id: eventRow
           required property var modelData
@@ -310,7 +346,8 @@ Item {
             spacing: 1
             Text {
               width: parent.width
-              text: eventRow.modelData.title
+              text: eventRow.modelData.title || "(No title)"
+              textFormat: Text.PlainText   // titles come from other people's calendars
               elide: Text.ElideRight
               color: card.ink
               font.family: card.fontName
@@ -318,7 +355,8 @@ Item {
             }
             Text {
               width: parent.width
-              text: card.timeLabel(eventRow.modelData) + "  ·  " + eventRow.modelData.calendar
+              text: card.timeLabel(eventRow.modelData, card.selected) + "  ·  " + eventRow.modelData.calendar
+              textFormat: Text.PlainText
               elide: Text.ElideRight
               color: card.ink
               opacity: 0.5
@@ -329,6 +367,32 @@ Item {
           HoverHandler { id: rowHover; cursorShape: eventRow.modelData.link ? Qt.PointingHandCursor : Qt.ArrowCursor }
           TapHandler { onTapped: if (eventRow.modelData.link) card.openEvent(eventRow.modelData.link) }
         }
+      }
+
+      Text {
+        visible: card.agenda.length > card.agendaRows
+        text: "+ " + (card.agenda.length - card.agendaRows) + " more"
+        color: card.ink
+        opacity: 0.45
+        font.family: card.fontName
+        font.pixelSize: Style.font.caption
+        leftPadding: Style.space(18)
+      }
+
+      // A calendar that couldn't be loaded, named even when others did.
+      Text {
+        visible: !card.loading && card.error !== ""
+        width: parent.width
+        wrapMode: Text.WordWrap
+        maximumLineCount: 4
+        elide: Text.ElideRight
+        textFormat: Text.PlainText
+        text: card.error
+        color: card.ink
+        opacity: 0.55
+        font.family: card.fontName
+        font.pixelSize: Style.font.caption
+        topPadding: Style.space(4)
       }
     }
 
@@ -399,6 +463,7 @@ Item {
                 anchors.rightMargin: Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
                 text: calRow.modelData.name
+                textFormat: Text.PlainText
                 elide: Text.ElideRight
                 color: card.ink
                 opacity: calRow.modelData.shown ? 1 : 0.6

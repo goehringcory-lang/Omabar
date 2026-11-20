@@ -22,31 +22,52 @@ Item {
   readonly property color ink: Commons.Color.popups.text
   readonly property bool bottomBar: bar && bar.position === "bottom"
 
+  // Passed on to the card.
+  property bool twelveHour: true
+  property int weekStart: -1
+
   property string month: ""
+  // Counts event requests, so an answer that comes back after a newer request
+  // (fast clicks through the months) is dropped instead of shown.
+  property int eventsAsk: 0
 
   function run(args, done) {
     var proc = runner.createObject(root, { command: [root.helper].concat(args) })
-    proc.finished.connect(function(text) {
-      try { done(JSON.parse(text)) } catch (e) { done(null) }
+    var answered = false
+    function finish(text) {
+      if (answered) return
+      answered = true
+      var data = null
+      try { data = JSON.parse(text) } catch (e) {}
+      done(data)
       proc.destroy()
-    })
+    }
+    proc.finished.connect(finish)
+    // A helper that never starts or never answers must not leave "Loading…" up.
+    proc.gaveUp.connect(function() { finish("") })
     proc.running = true
   }
 
-  function refresh() {
+  function loadEvents() {
+    var ask = ++root.eventsAsk
     card.loading = true
+    run(["events"].concat(root.month ? [root.month] : []), function(data) {
+      if (ask !== root.eventsAsk) return
+      card.loading = false
+      if (!data) { card.error = "Couldn't read your calendars."; return }
+      card.connected = data.connected === true
+      card.error = String(data.error || "")
+      card.events = Array.isArray(data.events) ? data.events : []
+    })
+  }
+
+  function refresh() {
     run(["calendars"], function(data) {
       if (!data) return
       card.connected = data.connected === true
-      card.calendars = data.calendars || []
+      card.calendars = Array.isArray(data.calendars) ? data.calendars : []
     })
-    run(["events"].concat(root.month ? [root.month] : []), function(data) {
-      card.loading = false
-      if (!data) { card.error = "unreadable"; return }
-      card.connected = data.connected === true
-      card.error = data.error || ""
-      card.events = data.events || []
-    })
+    loadEvents()
   }
 
   onOpenChanged: {
@@ -61,7 +82,13 @@ Item {
     Process {
       id: proc
       signal finished(string text)
+      signal gaveUp()
       stdout: StdioCollector { onStreamFinished: proc.finished(text) }
+      property Timer watchdog: Timer {
+        interval: 60000
+        running: true
+        onTriggered: { proc.running = false; proc.gaveUp() }
+      }
     }
   }
 
@@ -79,12 +106,12 @@ Item {
         anchors.fill: parent
         ink: root.ink
         fontName: root.bar && root.bar.fontFamily ? root.bar.fontFamily : "monospace"
+        twelveHour: root.twelveHour
+        weekStart: root.weekStart
 
         onMonthShown: function(year, month) {
           root.month = year + "-" + (month < 10 ? "0" : "") + month
-          root.run(["events", root.month], function(data) {
-            if (data) card.events = data.events || []
-          })
+          root.loadEvents()
         }
         onToggleCalendar: function(id) {
           root.run(["toggle", id], function() { root.refresh() })

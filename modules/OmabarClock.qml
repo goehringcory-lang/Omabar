@@ -7,6 +7,8 @@
 // Settings (inline on the shell.json entry):
 //   twelveHour - 12-hour time with AM/PM beside the tiles (default true)
 //   showDate   - the date as quiet text beside the tiles (default true)
+//   weekStart  - "sunday" or "monday" for the calendar's first column
+//                (default: what your system's region uses)
 import QtQuick
 import Quickshell
 import qs.Commons
@@ -103,6 +105,11 @@ Item {
     anchorItem: board
     bar: root.bar
     owner: root
+    twelveHour: root.twelveHour
+    weekStart: {
+      var day = String(root.setting("weekStart", "")).toLowerCase()
+      return day === "sunday" ? 0 : (day === "monday" ? 1 : -1)
+    }
     open: root.calendarOpen
     onDismissed: root.calendarOpen = false
   }

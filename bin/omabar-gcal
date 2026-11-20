@@ -22,6 +22,7 @@
 Calendar addresses and tokens live in ~/.config/omabar/, readable only by you.
 """
 import base64
+import concurrent.futures
 import datetime as dt
 import hashlib
 import http.server
@@ -66,29 +67,61 @@ def read_json(path, fallback=None):
 
 
 def write_private(path, data):
+    """Write JSON readable only by you, replacing the file in one step so a
+    reader never sees half of it."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    partial = f"{path}.{os.getpid()}.tmp"
+    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as handle:
         json.dump(data, handle)
+    os.replace(partial, path)
 
 
 def write_cache(name, data):
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    with open(os.path.join(CACHE_DIR, name), "w") as handle:
-        json.dump({"at": time.time(), "data": data}, handle)
+    # Cached feeds hold your events, so they are private too.
+    write_private(os.path.join(CACHE_DIR, name), {"at": time.time(), "data": data})
 
 
-def read_cache(name, max_age):
+def read_cache(name, max_age=None):
+    """Cached data no older than max_age seconds; any age when max_age is None."""
     cached = read_json(os.path.join(CACHE_DIR, name))
-    if cached and time.time() - cached.get("at", 0) < max_age:
+    if not isinstance(cached, dict) or "data" not in cached:
+        return None
+    if max_age is None or 0 <= time.time() - cached.get("at", 0) < max_age:
         return cached["data"]
     return None
 
 
-def clear_cache():
+def clear_cache(prefix="gcal-", keep_feeds=False):
     for name in os.listdir(CACHE_DIR) if os.path.isdir(CACHE_DIR) else []:
-        if name.startswith("gcal-"):
-            os.remove(os.path.join(CACHE_DIR, name))
+        if name.startswith(prefix) and not (keep_feeds and name.startswith("gcal-ical-")):
+            try:
+                os.remove(os.path.join(CACHE_DIR, name))
+            except OSError:
+                pass
+
+
+def local_zone():
+    """The system's time zone by name (e.g. America/Los_Angeles), so times on
+    the far side of a daylight-saving change come out right. A bare UTC offset
+    is only correct for today."""
+    names = [os.environ.get("TZ", "").lstrip(":")]
+    try:
+        path = os.path.realpath("/etc/localtime")
+        if "/zoneinfo/" in path:
+            names.append(re.sub(r"^(posix|right)/", "", path.split("/zoneinfo/", 1)[1]))
+    except OSError:
+        pass
+    try:
+        with open("/etc/timezone") as handle:
+            names.append(handle.read().strip())
+    except OSError:
+        pass
+    for name in names:
+        found = ical.zone(name) if name else None
+        if found is not None:
+            return found
+    return dt.datetime.now().astimezone().tzinfo
 
 
 def post_form(url, fields):
@@ -105,22 +138,48 @@ def linked():
     return data if isinstance(data, list) else []
 
 
+def feed_url(url):
+    return re.sub(r"^webcal://", "https://", url.strip(), flags=re.I)
+
+
 def fetch_feed(url):
-    url = re.sub(r"^webcal://", "https://", url.strip(), flags=re.I)
-    request = urllib.request.Request(url, headers={"User-Agent": "omabar-gcal"})
+    request = urllib.request.Request(feed_url(url), headers={"User-Agent": "omabar-gcal"})
     with urllib.request.urlopen(request, timeout=15) as response:
-        return response.read().decode("utf-8", "replace")
+        text = response.read(32 * 1024 * 1024).decode("utf-8", "replace")
+    # A sign-in page or an error page also arrives as a 200.
+    if "BEGIN:VCALENDAR" not in text[:4096].upper():
+        raise ValueError("that address didn't return a calendar")
+    return text
+
+
+def feed_problem(error):
+    """Why a calendar's feed couldn't be read, in a line a person can act on."""
+    if isinstance(error, urllib.error.HTTPError):
+        if error.code in (401, 403, 404, 410):
+            return "its secret address no longer works. Remove it and add it again."
+        return f"Google answered with an error ({error.code})."
+    if isinstance(error, ValueError):
+        return "its address didn't return a calendar. Remove it and add it again."
+    return "couldn't reach Google. Check your connection."
 
 
 def feed(calendar):
-    """The calendar's feed text, cached for a few minutes."""
+    """(feed text, problem). The text is cached for a few minutes. When Google
+    can't be reached the last copy that loaded is used, however old, with the
+    problem named; an address Google now refuses gives no text at all."""
     name = f"gcal-ical-{calendar['id']}.json"
     cached = read_cache(name, CACHE_SECONDS)
     if cached is not None:
-        return cached
-    text = fetch_feed(calendar["url"])
+        return cached, ""
+    try:
+        text = fetch_feed(calendar["url"])
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        refused = isinstance(error, ValueError) or \
+            (isinstance(error, urllib.error.HTTPError) and error.code in (401, 403, 404, 410))
+        stale = None if refused else read_cache(name)
+        return stale, feed_problem(error)
     write_cache(name, text)
-    return text
+    return text, ""
 
 
 def cmd_connect():
@@ -144,7 +203,8 @@ def cmd_connect():
         if not re.match(r"^(https?|webcal)://", url, re.I):
             print("That isn't a calendar address. It starts with https://calendar.google.com/calendar/ical/")
             continue
-        if any(c["url"] == url for c in calendars):
+        url = feed_url(url)
+        if any(feed_url(c["url"]) == url for c in calendars):
             print("Already added.")
             continue
         try:
@@ -152,19 +212,26 @@ def cmd_connect():
         except urllib.error.HTTPError as error:
             print(f"Google refused that address ({error.code}). Copy the secret address again; it may have been reset.")
             continue
-        except (urllib.error.URLError, OSError, ValueError) as error:
-            print(f"Couldn't read that address: {error}")
+        except ValueError:
+            print("That address didn't return a calendar. Copy \"Secret address in iCal format\", not the public or embed address.")
+            continue
+        except (urllib.error.URLError, OSError) as error:
+            print(f"Couldn't read that address: {getattr(error, 'reason', error)}")
             continue
         name = parsed["name"] or f"Calendar {len(calendars) + 1}"
         if "@" in name and len(calendars) == 0:
             name = "My calendar"
-        shared = input(f"Found \"{name}\" ({len(parsed['events'])} events). Is it shared with you by someone else? [y/N] ").strip().lower().startswith("y")
+        try:
+            shared = input(f"Found \"{name}\" ({len(parsed['events'])} events). Is it shared with you by someone else? [y/N] ").strip().lower().startswith("y")
+        except EOFError:
+            shared = False
+        taken = {c.get("color") for c in calendars}
         calendars.append({
             "id": "ical-" + hashlib.sha1(url.encode()).hexdigest()[:12],
             "url": url,
             "name": name,
             "owned": not shared,
-            "color": PALETTE[len(calendars) % len(PALETTE)],
+            "color": next((c for c in PALETTE if c not in taken), PALETTE[len(calendars) % len(PALETTE)]),
         })
         write_private(ICAL_FILE, calendars)
         added += 1
@@ -184,7 +251,10 @@ def cmd_disconnect():
         return 0
     for i, c in enumerate(calendars, 1):
         print(f"  {i}. {c['name']}")
-    answer = input("Remove which? (numbers separated by spaces, or 'all'): ").strip().lower()
+    try:
+        answer = input("Remove which? (numbers separated by spaces, or 'all'): ").strip().lower()
+    except EOFError:
+        answer = ""
     if answer == "all":
         keep = []
     else:
@@ -375,11 +445,23 @@ def shown(calendar, chosen):
     return calendar["googleSelected"] or calendar["primary"]
 
 
+def signed_in():
+    """Whether the optional Google API login works right now. A login that has
+    stopped working must not take the linked calendars down with it."""
+    try:
+        return bool(access_token())
+    except (urllib.error.URLError, OSError, KeyError, ValueError):
+        return False
+
+
 def all_calendars():
     """Google API calendars (when signed in) and linked iCal calendars."""
     calendars = []
-    if access_token():
-        calendars += fetch_calendars()
+    if signed_in():
+        try:
+            calendars += fetch_calendars()
+        except (urllib.error.URLError, OSError, KeyError, ValueError):
+            pass
     for c in linked():
         calendars.append({"id": c["id"], "name": c["name"], "color": c.get("color", PALETTE[0]),
                           "owned": c.get("owned", True), "primary": False, "googleSelected": True,
@@ -411,9 +493,7 @@ def cmd_toggle(calendar_id):
     current = shown(match, chosen) if match else chosen.get(calendar_id, False)
     chosen[calendar_id] = not current
     write_private(PREFS_FILE, data)
-    for name in os.listdir(CACHE_DIR) if os.path.isdir(CACHE_DIR) else []:
-        if name.startswith("gcal-events"):
-            os.remove(os.path.join(CACHE_DIR, name))
+    clear_cache("gcal-events")
     print(json.dumps({"id": calendar_id, "shown": chosen[calendar_id]}))
     return 0
 
@@ -429,20 +509,44 @@ def event_colors():
     return colors
 
 
+def linked_events(calendar, start, end, tz):
+    """(events, problem) for one linked calendar."""
+    text, problem = feed(calendar)
+    if text is None:
+        return [], problem
+    events = []
+    for item in ical.expand_events(ical.read_calendar(text), start, end, tz):
+        day = item["start"].value
+        events.append({
+            "title": item["title"],
+            "start": ical.iso(item["start"], tz),
+            "end": ical.iso(item["end"], tz),
+            "allDay": item["start"].all_day,
+            "location": item["location"],
+            "calendar": calendar["name"],
+            "color": calendar.get("color", PALETTE[0]),
+            "link": f"https://calendar.google.com/calendar/r/day/{day.year}/{day.month}/{day.day}",
+        })
+    return events, problem
+
+
 def cmd_events(month=None):
     if not is_connected():
         print(json.dumps({"connected": False, "events": []}))
         return 0
-    local = dt.datetime.now().astimezone()
-    if month and re.fullmatch(r"\d{4}-\d{2}", month):
+    tz = local_zone()
+    now = dt.datetime.now(tz)
+    if month and re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
         year, mon = map(int, month.split("-"))
     else:
-        year, mon = local.year, local.month
-    start = dt.datetime(year, mon, 1, tzinfo=local.tzinfo)
-    month_end = dt.datetime(year + (mon == 12), mon % 12 + 1, 1, tzinfo=local.tzinfo)
-    today = local.replace(hour=0, minute=0, second=0, microsecond=0)
-    start = min(start, today)
-    end = max(month_end, today + dt.timedelta(days=15))
+        year, mon = now.year, now.month
+    month_start = dt.datetime(year, mon, 1, tzinfo=tz)
+    month_end = dt.datetime(year + (mon == 12), mon % 12 + 1, 1, tzinfo=tz)
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # The month grid also shows the last days of the month before and the
+    # first of the month after, and today's agenda is always within reach.
+    start = min(month_start - dt.timedelta(days=7), today)
+    end = max(month_end + dt.timedelta(days=14), today + dt.timedelta(days=15))
 
     key = f"gcal-events-{start:%Y%m%d}-{end:%Y%m%d}.json"
     cached = read_cache(key, CACHE_SECONDS)
@@ -452,36 +556,39 @@ def cmd_events(month=None):
 
     chosen = prefs().get("shown", {})
     events, problems = [], []
-    signed_in = bool(access_token())
-    palette = event_colors() if signed_in else {}
-    for calendar in linked():
-        if not shown({"id": calendar["id"], "googleSelected": True, "primary": False}, chosen):
-            continue
+    wanted = [c for c in linked()
+              if shown({"id": c["id"], "googleSelected": True, "primary": False}, chosen)]
+
+    def load(calendar):
         try:
-            parsed = ical.read_calendar(feed(calendar))
-        except (urllib.error.URLError, OSError, ValueError) as error:
-            problems.append(f"{calendar['name']}: {error}")
-            continue
-        for item in ical.expand_events(parsed, start, end, local.tzinfo):
-            day = item["start"].value
-            events.append({
-                "title": item["title"],
-                "start": ical.iso(item["start"], local.tzinfo),
-                "end": ical.iso(item["end"], local.tzinfo),
-                "allDay": item["start"].all_day,
-                "location": item["location"],
-                "calendar": calendar["name"],
-                "color": calendar.get("color", PALETTE[0]),
-                "link": f"https://calendar.google.com/calendar/r/day/{day.year}/{day.month}/{day.day}",
-            })
-    for calendar in (fetch_calendars() if signed_in else []):
+            return linked_events(calendar, start, end, tz)
+        except Exception as error:  # one unreadable calendar must not hide the others
+            return [], f"couldn't be read ({type(error).__name__})."
+
+    if wanted:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(wanted))) as pool:
+            for calendar, (found, problem) in zip(wanted, pool.map(load, wanted)):
+                events += found
+                if problem:
+                    problems.append(f"{calendar['name']}: {problem}")
+
+    api_calendars, palette = [], {}
+    try:
+        if access_token():
+            api_calendars, palette = fetch_calendars(), event_colors()
+    except urllib.error.HTTPError as error:
+        problems.append("Google account: " + google_error(error))
+    except (urllib.error.URLError, OSError, KeyError, ValueError):
+        problems.append("Google account: couldn't reach Google.")
+    for calendar in api_calendars:
         if not shown(calendar, chosen):
             continue
         try:
             data = api(f"/calendars/{urllib.parse.quote(calendar['id'])}/events",
                        timeMin=start.isoformat(), timeMax=end.isoformat(),
                        singleEvents="true", orderBy="startTime", maxResults=250)
-        except urllib.error.HTTPError:
+        except (urllib.error.URLError, OSError, ValueError):
+            problems.append(f"{calendar['name']}: couldn't be read.")
             continue
         for item in data.get("items", []):
             if item.get("status") == "cancelled":
@@ -500,7 +607,7 @@ def cmd_events(month=None):
             })
     events.sort(key=lambda e: (e["start"] or "", not e["allDay"]))
     if problems:
-        print(json.dumps({"connected": True, "events": events, "error": "; ".join(problems)}))
+        print(json.dumps({"connected": True, "events": events, "error": " ".join(problems)}))
         return 0
     write_cache(key, events)
     print(json.dumps({"connected": True, "events": events}))
@@ -532,6 +639,9 @@ def main(argv):
         return cmd_connect()
     if command == "disconnect":
         return cmd_disconnect()
+    if command == "toggle" and len(rest) != 1:
+        print(__doc__, file=sys.stderr)
+        return 2
     try:
         if command == "calendars":
             return cmd_calendars()
@@ -544,7 +654,7 @@ def main(argv):
     except urllib.error.HTTPError as error:
         print(json.dumps({"connected": True, "error": google_error(error), "events": [], "calendars": []}))
         return 0
-    except (urllib.error.URLError, OSError, KeyError, ValueError) as error:
+    except (urllib.error.URLError, OSError, KeyError, ValueError, TypeError, AttributeError) as error:
         print(json.dumps({"connected": True, "error": str(error), "events": [], "calendars": []}))
         return 0
     print(__doc__, file=sys.stderr)
@@ -552,4 +662,7 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    try:
+        sys.exit(main(sys.argv))
+    except KeyboardInterrupt:
+        sys.exit(130)

@@ -79,12 +79,54 @@ Item {
     return fallback
   }
 
-  readonly property bool active: player !== null && !!(player.trackTitle || player.trackArtist)
-  readonly property bool playing: active && player.isPlaying
-  readonly property string title: active ? (player.trackTitle || "") : ""
-  readonly property string artist: active ? (player.trackArtist || "") : ""
-  readonly property string artUrl: active && player.trackArtUrl ? player.trackArtUrl : ""
-  readonly property real progress: active && player.lengthSupported && player.length > 0
+  // What the player reports right now. Spotify clears its track for a moment
+  // between songs, around ads and while it starts up.
+  readonly property bool hasTrack: player !== null && !!(player.trackTitle || player.trackArtist)
+  // Spotify marks an ad by its track id; ads often come with no artist or cover.
+  readonly property bool isAd: {
+    if (!hasTrack) return false
+    var meta = player.metadata
+    var id = String(meta && meta["mpris:trackid"] || "")
+    return id.indexOf("/ad/") !== -1 || id.indexOf(":ad:") !== -1
+  }
+  readonly property string liveTitle: hasTrack ? (player.trackTitle || (isAd ? "Advertisement" : "")) : ""
+  readonly property string liveArtist: hasTrack ? (player.trackArtist || (isAd && player.trackTitle ? "Advertisement" : "")) : ""
+  readonly property string liveArt: hasTrack && player.trackArtUrl ? player.trackArtUrl : ""
+
+  // What the bar shows. It keeps the last track through those short gaps, so
+  // the capsule doesn't collapse and swell again on every song change.
+  property bool active: false
+  property string title: ""
+  property string artist: ""
+  property string artUrl: ""
+  function settle() {
+    if (hasTrack) {
+      linger.stop()
+      title = liveTitle; artist = liveArtist; artUrl = liveArt
+      active = true
+    } else if (player !== null && active) {
+      linger.restart()
+    } else {
+      linger.stop()
+      active = false
+      title = ""; artist = ""; artUrl = ""
+    }
+  }
+  // Title, artist and cover change one after another; settle once they all have.
+  onHasTrackChanged: Qt.callLater(root.settle)
+  onPlayerChanged: Qt.callLater(root.settle)
+  onLiveTitleChanged: Qt.callLater(root.settle)
+  onLiveArtistChanged: Qt.callLater(root.settle)
+  onLiveArtChanged: Qt.callLater(root.settle)
+  Component.onCompleted: settle()
+  Timer {
+    id: linger
+    interval: 1500
+    onTriggered: if (!root.hasTrack) { root.active = false; root.title = ""; root.artist = ""; root.artUrl = "" }
+  }
+
+  readonly property bool playing: hasTrack && player.isPlaying
+  readonly property real progress: hasTrack && player.lengthSupported && player.length > 0
     ? Math.max(0, Math.min(1, player.position / player.length)) : 0
 
   // MPRIS doesn't announce position as it moves; ask once a second while playing.
@@ -289,20 +331,20 @@ Item {
         icon: "\u{F04AE}"
         visible: root.active
         enabledAction: !!root.player && root.player.canGoPrevious
-        onClicked: root.player.previous()
+        onClicked: if (root.player) root.player.previous()
       }
       Glyph {
         icon: root.playing ? "\u{F03E4}" : "\u{F040A}"
         size: Style.font.iconLarge
         visible: root.active
         enabledAction: !!root.player && root.player.canTogglePlaying
-        onClicked: root.player.togglePlaying()
+        onClicked: if (root.player) root.player.togglePlaying()
       }
       Glyph {
         icon: "\u{F04AD}"
         visible: root.active
         enabledAction: !!root.player && root.player.canGoNext
-        onClicked: root.player.next()
+        onClicked: if (root.player) root.player.next()
       }
 
       Item { width: Style.space(4); height: 1; visible: root.active }
@@ -380,7 +422,7 @@ Item {
         WheelHandler {
           onWheel: function(event) {
             var p = root.player
-            if (!p || !p.volumeSupported || !p.canControl) return
+            if (!p || !p.volumeSupported || !p.canControl || event.angleDelta.y === 0) return
             var step = event.angleDelta.y > 0 ? 0.05 : -0.05
             p.volume = Math.max(0, Math.min(1, p.volume + step))
           }
@@ -421,17 +463,28 @@ Item {
       Glyph {
         anchors.horizontalCenter: parent.horizontalCenter
         icon: root.playing ? "\u{F03E4}" : "\u{F040A}"
-        onClicked: if (root.player) root.player.togglePlaying()
+        enabledAction: !root.player || root.player.canTogglePlaying
+        onClicked: {
+          if (root.player) root.player.togglePlaying()
+          else root.openApp()
+        }
       }
     }
   }
 
+  readonly property string tooltipText: !active ? ""
+    : title + (artist ? "\n" + artist : "") + (hasTrack && player.trackAlbum ? "\n" + player.trackAlbum : "")
+  function syncTooltip() {
+    if (!bar || typeof bar.showTooltip !== "function") return
+    if (wholeHover.hovered && tooltipText !== "" && !menuOpen) bar.showTooltip(root, tooltipText)
+    else bar.hideTooltip(root)
+  }
+  // Follow the song while the pointer rests on the player.
+  onTooltipTextChanged: if (wholeHover.hovered) syncTooltip()
+  onMenuOpenChanged: syncTooltip()
+
   HoverHandler {
     id: wholeHover
-    onHoveredChanged: {
-      if (!root.bar) return
-      if (hovered && root.active) root.bar.showTooltip(root, root.title + (root.artist ? "\n" + root.artist : "") + (root.player && root.player.trackAlbum ? "\n" + root.player.trackAlbum : ""))
-      else root.bar.hideTooltip(root)
-    }
+    onHoveredChanged: root.syncTooltip()
   }
 }
