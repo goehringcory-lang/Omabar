@@ -27,7 +27,9 @@ omarchy plugin add https://github.com/goehringcory-lang/Omabar.git
 ~/.config/omarchy/plugins/goehringcory.omabar/bin/omabar-setup
 ```
 
-`omabar-setup` builds the bar from the Omarchy you have installed, backs up `~/.config/omarchy/shell.json` the first time it runs, switches the shell to Omabar, lays out the widgets above, and sets the bar to glassy so Hyprland blurs what's behind it. Setup reads which plugins you have installed and places each plugin's widget exactly once: ai-usagebar beside the agents icon, Omaplug beside the clock, and every other plugin widget in the drawer panel. The layout is written fresh each time, so nothing doubles up, but each widget keeps the settings it had. Run it again after installing a companion plugin to add it to the bar, and after an Omarchy update so the bar matches the new shell.
+`omabar-setup` builds the bar from the Omarchy you have installed, backs up `~/.config/omarchy/shell.json` the first time it runs, switches the shell to Omabar, lays out the widgets above, and sets the bar to glassy so Hyprland blurs what's behind it. Setup reads which plugins you have installed and places each plugin's widget exactly once: ai-usagebar beside the agents icon, Omaplug beside the clock, and every other plugin widget in the drawer panel. No widget from your old layout is carried over, so nothing doubles up. Run it again after installing a companion plugin to add it to the bar. Settings you put on Omabar's widgets with `omarchy bar set` are kept when you do.
+
+After an Omarchy update the bar has to be rebuilt from the new shell's own. Setup installs a small hook (`~/.config/omarchy/hooks/post-update.d/omabar-rebuild`) so `omarchy update` does that for you; `omabar-setup --rebuild` does the same by hand and leaves your layout alone.
 
 Setup checks that the shell actually loaded Omabar. If it didn't, it prints what the shell logged instead of leaving you with the built-in bar and no explanation.
 
@@ -61,7 +63,15 @@ Prefer the Google Calendar API (event colors set in Google, and every calendar a
 
 ### Thunderbird
 
-The mail button turns the accent color while any inbox in Thunderbird, across all your accounts, has unread mail, and goes back once it's read. Hover it for the count. It reads the unread counts Thunderbird keeps in its profile (regular, Flatpak or Snap), every few seconds and right away when Thunderbird shows a new-mail alert, so Thunderbird needs to be running to fetch mail. Click to open Thunderbird.
+The mail button turns the accent color while any inbox in Thunderbird, across all your accounts, has unread mail, and goes back once it's read. Hover it for the count. It reads the unread counts Thunderbird keeps in its profile (regular, Flatpak or Snap), whenever Thunderbird updates them or shows a new-mail alert (nothing polls), so Thunderbird needs to be running to fetch mail. Click to open Thunderbird.
+
+## Measure it
+
+```bash
+~/.config/omarchy/plugins/goehringcory.omabar/bin/omabar-stats -n "what this is"
+```
+
+watches the shell for ten seconds and prints its memory, its CPU, Hyprland's CPU and how often it wakes up. Each run is saved, and `omabar-stats --log` lists them side by side, so you can compare before and after an update. The bar is one part of Omarchy's shell, so the numbers are for the whole shell; measure in the same state each time (music playing or not, no drop-downs open, mouse off the bar).
 
 ## Undo
 
@@ -70,12 +80,14 @@ The mail button turns the accent color while any inbox in Thunderbird, across al
 omarchy bar reset                                                          # or just the built-in bar
 ```
 
+Restore before removing the plugin, since the script goes with it. It puts back the layout from before setup and removes the update hook. Setting Omabar up again later backs up whatever layout you have then.
+
 ## Customize
 
 Everything is normal Omarchy bar configuration, so you can drag widgets around, move things in and out of the drawer (the layout's `tray` section), and use `omarchy bar move`, `omarchy bar set`, `omarchy plugin add`, and `omarchy plugin remove` as usual.
 
 - **Look:** double-click empty bar space, or run `omarchy bar background opaque|glassy|none`, to switch between solid glass, frosted glass, and clear.
-- **Player:** `omarchy bar set omabar-player player <name>` follows a different MPRIS player, `anyPlayer true` falls back to whatever is playing, `maxWidth 260` gives the track more room, `lofi <link>` points the Lofi button at another playlist, `showIdle false` hides the player while Spotify is closed, and `bulge false` keeps it flat inside the bar. Pin playlists with `omarchy bar set omabar-player playlists '[{"name":"Focus","uri":"spotify:playlist:…"}]' --json`.
+- **Player:** `omarchy bar set omabar-player player <name>` follows a different MPRIS player, `anyPlayer true` falls back to whatever is playing, `maxWidth 260` gives the track more room, `lofi <link>` points the Lofi button at another playlist, `showIdle false` hides the player while Spotify is closed, `bulge false` keeps it flat inside the bar, and `spin false` keeps the album art still, which is the lightest setting while music plays. Pin playlists with `omarchy bar set omabar-player playlists '[{"name":"Focus","uri":"spotify:playlist:…"}]' --json`.
 - **Clock:** the clock shows 12-hour time with AM/PM; `omarchy bar set omabar-clock twelveHour false` for 24-hour, `showDate false` for just the tiles.
 - **Motion:** animations follow Omarchy's reduce-motion setting. Everything is drawn by the GPU at your display's refresh rate, antialiased and scaled with mipmaps, so it stays sharp on HiDPI screens.
 - **Workspace dots:** `omarchy bar set omabar-workspaces persistent 7` changes how many dots always show.

@@ -45,7 +45,7 @@ def main() -> int:
     clone = pathlib.Path(sys.argv[1])
     modules = pathlib.Path(sys.argv[2])
     row = clone / "CityRow.qml"
-    text = row.read_text()
+    text = row.read_text(encoding="utf-8")
     shutil.copyfile(modules / "OmabarFlapText.qml", clone / "OmabarFlapText.qml")
     if MARK in text:
         print("omabar: world clock already has split-flap times")
@@ -53,7 +53,7 @@ def main() -> int:
     if text.count(OLD) != 1:
         print("omabar: the world clock has changed; left it unstyled", file=sys.stderr)
         return 1
-    row.write_text(text.replace(OLD, NEW))
+    row.write_text(text.replace(OLD, NEW), encoding="utf-8")
     print("omabar: world clock now uses split-flap times")
     return 0
 

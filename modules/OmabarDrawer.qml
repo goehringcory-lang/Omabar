@@ -552,7 +552,8 @@ Item {
     opacity: dimmed ? 0.35 : 1
     scale: tileHover.pressed ? 0.96 : 1
     Behavior on color { ColorAnimation { duration: Style.duration(120) } }
-    Behavior on scale { NumberAnimation { duration: Style.duration(120) } }
+    Behavior on scale { NumberAnimation { duration: Style.duration(140); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut } }
+    Behavior on opacity { NumberAnimation { duration: Style.duration(140) } }
 
     Column {
       anchors.centerIn: parent
@@ -565,11 +566,19 @@ Item {
         font.pixelSize: Style.font.iconLarge
         Behavior on color { ColorAnimation { duration: Style.duration(120) } }
       }
+      // Two words wrap onto a second line and one long word shrinks a little
+      // to fit, rather than being cut off ("Notificatio…").
       Text {
         anchors.horizontalCenter: parent.horizontalCenter
-        width: Math.min(implicitWidth, tile.width - Style.space(12))
+        width: tile.width - Style.space(10)
+        horizontalAlignment: Text.AlignHCenter
         text: tile.label
+        wrapMode: Text.WordWrap
+        maximumLineCount: 2
+        lineHeight: 0.95
         elide: Text.ElideRight
+        fontSizeMode: tile.label.indexOf(" ") === -1 ? Text.HorizontalFit : Text.FixedSize
+        minimumPixelSize: Math.max(8, Style.font.caption - 2)
         color: root.ink
         opacity: 0.85
         font.family: root.fontName
@@ -597,7 +606,10 @@ Item {
     radius: Style.space(10)
     color: Qt.rgba(root.ink.r, root.ink.g, root.ink.b, appHover.hovered ? 0.14 : 0.07)
     opacity: dimmed ? 0.35 : 1
+    scale: appHover.pressed ? 0.94 : 1
     Behavior on color { ColorAnimation { duration: Style.duration(120) } }
+    Behavior on scale { NumberAnimation { duration: Style.duration(140); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut } }
+    Behavior on opacity { NumberAnimation { duration: Style.duration(140) } }
 
     IconImage {
       anchors.centerIn: parent
@@ -635,8 +647,9 @@ Item {
     implicitHeight: Style.space(32)
     height: implicitHeight
     radius: Style.space(8)
-    color: Qt.rgba(root.ink.r, root.ink.g, root.ink.b, rowHover.hovered && enabled ? 0.10 : 0)
+    color: Qt.rgba(root.ink.r, root.ink.g, root.ink.b, !enabled ? 0 : rowHover.pressed ? 0.16 : rowHover.hovered ? 0.10 : 0)
     opacity: enabled ? 1 : 0.45
+    Behavior on color { ColorAnimation { duration: Style.duration(100) } }
 
     Text {
       id: lead
