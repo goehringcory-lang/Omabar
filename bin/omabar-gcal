@@ -1,0 +1,355 @@
+#!/usr/bin/env python3
+"""Omabar's Google Calendar helper.
+
+    omabar-gcal login
+        Connect your Google account (read-only access to your calendars).
+    omabar-gcal calendars
+        Print every calendar you own or that is shared with you, with its
+        Google color and whether Omabar shows it, as JSON.
+    omabar-gcal toggle <calendar id>
+        Show or hide one calendar in the bar's calendar.
+    omabar-gcal events [YYYY-MM]
+        Print events for that month (default: this month) plus the next 14
+        days from the calendars you show, each with its Google color, as JSON.
+    omabar-gcal status
+        Print whether an account is connected.
+
+You bring your own Google OAuth client (Desktop app), as Google requires for
+personal tools. Tokens live in ~/.config/omabar/, readable only by you.
+"""
+import base64
+import datetime as dt
+import hashlib
+import http.server
+import json
+import os
+import re
+import secrets
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
+
+CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "omabar")
+CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "omabar")
+CLIENT_FILE = os.path.join(CONFIG_DIR, "google-client.json")
+TOKEN_FILE = os.path.join(CONFIG_DIR, "google-token.json")
+PREFS_FILE = os.path.join(CONFIG_DIR, "calendars.json")
+CACHE_SECONDS = 300
+
+SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
+API = "https://www.googleapis.com/calendar/v3"
+
+
+# ── storage ───────────────────────────────────────────────────────────────
+
+def read_json(path, fallback=None):
+    try:
+        with open(path) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return fallback
+
+
+def write_private(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        json.dump(data, handle)
+
+
+def write_cache(name, data):
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(os.path.join(CACHE_DIR, name), "w") as handle:
+        json.dump({"at": time.time(), "data": data}, handle)
+
+
+def read_cache(name, max_age):
+    cached = read_json(os.path.join(CACHE_DIR, name))
+    if cached and time.time() - cached.get("at", 0) < max_age:
+        return cached["data"]
+    return None
+
+
+def clear_cache():
+    for name in os.listdir(CACHE_DIR) if os.path.isdir(CACHE_DIR) else []:
+        if name.startswith("gcal-"):
+            os.remove(os.path.join(CACHE_DIR, name))
+
+
+def post_form(url, fields):
+    request = urllib.request.Request(url, data=urllib.parse.urlencode(fields).encode(),
+                                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.load(response)
+
+
+# ── auth ──────────────────────────────────────────────────────────────────
+
+def client():
+    data = read_json(CLIENT_FILE, {}) or {}
+    data = data.get("installed", data)       # accept Google's downloaded JSON as-is
+    return data.get("client_id", ""), data.get("client_secret", "")
+
+
+def cmd_login():
+    cid, secret = client()
+    if not cid:
+        print("Omabar reads your calendars through a Google OAuth client of your own (free, a few minutes):\n")
+        print("  1. Open https://console.cloud.google.com/apis/library/calendar-json.googleapis.com and enable the Google Calendar API.")
+        print("  2. Under APIs & Services > OAuth consent screen, set it up as External and add yourself as a test user.")
+        print("  3. Under Credentials, create an OAuth client ID of type 'Desktop app'.\n")
+        print("Then paste the client ID and secret, or the path to the JSON file Google lets you download.\n")
+        answer = input("Client ID or JSON path: ").strip()
+        path = os.path.expanduser(answer)
+        if os.path.isfile(path):
+            data = read_json(path, {}) or {}
+            data = data.get("installed", data)
+            cid, secret = data.get("client_id", ""), data.get("client_secret", "")
+        else:
+            cid = answer
+            secret = input("Client secret: ").strip()
+        if not cid.endswith(".apps.googleusercontent.com") or not secret:
+            print("That doesn't look like a Desktop app client.")
+            return 1
+        write_private(CLIENT_FILE, {"client_id": cid, "client_secret": secret})
+
+    verifier = secrets.token_urlsafe(64)[:96]
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    state = secrets.token_urlsafe(16)
+    result = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if query.get("state", [""])[0] == state:
+                result["code"] = query.get("code", [""])[0]
+                result["error"] = query.get("error", [""])[0]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write("<h2>Omabar is connected to Google Calendar. You can close this tab.</h2>".encode())
+
+        def log_message(self, *args):
+            pass
+
+    # Google's loopback flow: any free port on 127.0.0.1.
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    server.timeout = 1
+    redirect = f"http://127.0.0.1:{server.server_port}"
+    url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode({
+        "client_id": cid, "redirect_uri": redirect, "response_type": "code",
+        "scope": SCOPE, "code_challenge": challenge, "code_challenge_method": "S256",
+        "state": state, "access_type": "offline", "prompt": "consent",
+    })
+    print("Opening Google in your browser to approve read-only access to your calendars…")
+    webbrowser.open(url)
+    deadline = time.time() + 300
+    while "code" not in result and time.time() < deadline:
+        server.handle_request()
+    server.server_close()
+
+    if not result.get("code"):
+        print("Google didn't approve the login" + (f": {result['error']}" if result.get("error") else "."))
+        return 1
+
+    token = post_form("https://oauth2.googleapis.com/token", {
+        "code": result["code"], "client_id": cid, "client_secret": secret,
+        "redirect_uri": redirect, "grant_type": "authorization_code", "code_verifier": verifier,
+    })
+    token["expires_at"] = time.time() + token.get("expires_in", 3600) - 60
+    write_private(TOKEN_FILE, token)
+    clear_cache()
+    print("Connected. Pick which calendars show from the calendar's Calendars button.")
+    return 0
+
+
+def access_token():
+    token = read_json(TOKEN_FILE)
+    cid, secret = client()
+    if not token or not cid:
+        return None
+    if time.time() < token.get("expires_at", 0):
+        return token["access_token"]
+    fresh = post_form("https://oauth2.googleapis.com/token", {
+        "client_id": cid, "client_secret": secret,
+        "refresh_token": token["refresh_token"], "grant_type": "refresh_token",
+    })
+    fresh.setdefault("refresh_token", token["refresh_token"])
+    fresh["expires_at"] = time.time() + fresh.get("expires_in", 3600) - 60
+    write_private(TOKEN_FILE, fresh)
+    return fresh["access_token"]
+
+
+def api(path, **params):
+    token = access_token()
+    url = f"{API}{path}" + ("?" + urllib.parse.urlencode(params) if params else "")
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.load(response)
+
+
+# ── calendars ─────────────────────────────────────────────────────────────
+
+def prefs():
+    return read_json(PREFS_FILE, {}) or {}
+
+
+def fetch_calendars():
+    cached = read_cache("gcal-calendars.json", 3600)
+    if cached is not None:
+        return cached
+    calendars, page = [], None
+    while True:
+        params = {"maxResults": 250}
+        if page:
+            params["pageToken"] = page
+        data = api("/users/me/calendarList", **params)
+        for item in data.get("items", []):
+            calendars.append({
+                "id": item["id"],
+                "name": item.get("summaryOverride") or item.get("summary", item["id"]),
+                "color": item.get("backgroundColor", "#4285f4"),
+                "owned": item.get("accessRole") == "owner",
+                "primary": item.get("primary", False),
+                "googleSelected": item.get("selected", False),
+            })
+        page = data.get("nextPageToken")
+        if not page:
+            break
+    calendars.sort(key=lambda c: (not c["primary"], not c["owned"], c["name"].lower()))
+    write_cache("gcal-calendars.json", calendars)
+    return calendars
+
+
+def shown(calendar, chosen):
+    # Until you pick, Omabar shows what Google Calendar itself shows.
+    if calendar["id"] in chosen:
+        return chosen[calendar["id"]]
+    return calendar["googleSelected"] or calendar["primary"]
+
+
+def cmd_calendars():
+    if not access_token():
+        print(json.dumps({"connected": False, "calendars": []}))
+        return 0
+    chosen = prefs().get("shown", {})
+    calendars = fetch_calendars()
+    for calendar in calendars:
+        calendar["shown"] = shown(calendar, chosen)
+    print(json.dumps({"connected": True, "calendars": calendars}))
+    return 0
+
+
+def cmd_toggle(calendar_id):
+    data = prefs()
+    chosen = data.setdefault("shown", {})
+    calendars = fetch_calendars() if access_token() else []
+    match = next((c for c in calendars if c["id"] == calendar_id), None)
+    current = shown(match, chosen) if match else chosen.get(calendar_id, False)
+    chosen[calendar_id] = not current
+    write_private(PREFS_FILE, data)
+    for name in os.listdir(CACHE_DIR) if os.path.isdir(CACHE_DIR) else []:
+        if name.startswith("gcal-events"):
+            os.remove(os.path.join(CACHE_DIR, name))
+    print(json.dumps({"id": calendar_id, "shown": chosen[calendar_id]}))
+    return 0
+
+
+# ── events ────────────────────────────────────────────────────────────────
+
+def event_colors():
+    cached = read_cache("gcal-colors.json", 86400)
+    if cached is not None:
+        return cached
+    colors = {k: v["background"] for k, v in api("/colors").get("event", {}).items()}
+    write_cache("gcal-colors.json", colors)
+    return colors
+
+
+def cmd_events(month=None):
+    if not access_token():
+        print(json.dumps({"connected": False, "events": []}))
+        return 0
+    local = dt.datetime.now().astimezone()
+    if month and re.fullmatch(r"\d{4}-\d{2}", month):
+        year, mon = map(int, month.split("-"))
+    else:
+        year, mon = local.year, local.month
+    start = dt.datetime(year, mon, 1, tzinfo=local.tzinfo)
+    month_end = dt.datetime(year + (mon == 12), mon % 12 + 1, 1, tzinfo=local.tzinfo)
+    today = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    start = min(start, today)
+    end = max(month_end, today + dt.timedelta(days=15))
+
+    key = f"gcal-events-{start:%Y%m%d}-{end:%Y%m%d}.json"
+    cached = read_cache(key, CACHE_SECONDS)
+    if cached is not None:
+        print(json.dumps({"connected": True, "events": cached}))
+        return 0
+
+    chosen = prefs().get("shown", {})
+    palette = event_colors()
+    events = []
+    for calendar in fetch_calendars():
+        if not shown(calendar, chosen):
+            continue
+        try:
+            data = api(f"/calendars/{urllib.parse.quote(calendar['id'])}/events",
+                       timeMin=start.isoformat(), timeMax=end.isoformat(),
+                       singleEvents="true", orderBy="startTime", maxResults=250)
+        except urllib.error.HTTPError:
+            continue
+        for item in data.get("items", []):
+            if item.get("status") == "cancelled":
+                continue
+            begins, ends = item.get("start", {}), item.get("end", {})
+            all_day = "date" in begins
+            events.append({
+                "title": item.get("summary", "(No title)"),
+                "start": begins.get("date") or begins.get("dateTime"),
+                "end": ends.get("date") or ends.get("dateTime"),
+                "allDay": all_day,
+                "location": item.get("location", ""),
+                "calendar": calendar["name"],
+                "color": palette.get(item.get("colorId", ""), calendar["color"]),
+                "link": item.get("htmlLink", ""),
+            })
+    events.sort(key=lambda e: (e["start"] or "", not e["allDay"]))
+    write_cache(key, events)
+    print(json.dumps({"connected": True, "events": events}))
+    return 0
+
+
+def cmd_status():
+    print("connected" if read_json(TOKEN_FILE) and client()[0] else "not connected")
+    return 0
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    command, rest = argv[1], argv[2:]
+    try:
+        if command == "login":
+            return cmd_login()
+        if command == "calendars":
+            return cmd_calendars()
+        if command == "toggle" and len(rest) == 1:
+            return cmd_toggle(rest[0])
+        if command == "events":
+            return cmd_events(rest[0] if rest else None)
+        if command == "status":
+            return cmd_status()
+    except (urllib.error.URLError, OSError, KeyError, ValueError) as error:
+        print(json.dumps({"connected": True, "error": str(error), "events": [], "calendars": []}))
+        return 0
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

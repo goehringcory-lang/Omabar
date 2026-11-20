@@ -1,0 +1,183 @@
+// A line of split-flap tiles, like an old departures board. Each character
+// sits on its own tile in the accent color; when it changes, the top flap
+// falls to show the new one, left to right in a short cascade. ":" draws a
+// colon and " " a gap. Used by the Omabar clock and the world clock.
+import QtQuick
+import qs.Commons
+import qs.Commons as Commons
+
+Item {
+  id: root
+
+  property string text: ""
+  property int tileHeight: 22
+  property color accent: Commons.Color.accent
+  property color base: Commons.Color.background
+  property string fontName: "monospace"
+  property int stagger: 70
+
+  readonly property var slots: text.split("")
+  readonly property int tileWidth: Math.round(tileHeight * 0.68)
+  readonly property int tileRadius: Math.max(2, Math.round(tileHeight * 0.12))
+  // A recess a shade darker than what it sits on, so the tiles read as hardware.
+  readonly property color tileFace: Qt.rgba(base.r * 0.55, base.g * 0.55, base.b * 0.55, 1)
+
+  implicitWidth: board.implicitWidth
+  implicitHeight: tileHeight
+  baselineOffset: Math.round(tileHeight * 0.82)
+
+  Row {
+    id: board
+    anchors.verticalCenter: parent.verticalCenter
+    spacing: Style.space(2)
+
+    Repeater {
+      model: root.slots.length
+
+      Item {
+        id: slot
+        required property int index
+        readonly property string ch: root.slots[index] || " "
+        readonly property bool separator: ch === ":" || ch === " "
+
+        width: separator ? Math.round(root.tileWidth * 0.42) : root.tileWidth
+        height: root.tileHeight
+
+        // The colon between hours and minutes.
+        Column {
+          visible: slot.ch === ":"
+          anchors.centerIn: parent
+          spacing: Math.round(root.tileHeight * 0.2)
+          Repeater {
+            model: 2
+            Rectangle {
+              width: Math.max(3, Math.round(root.tileHeight * 0.12)); height: width; radius: width / 2
+              color: root.accent
+              opacity: 0.9
+            }
+          }
+        }
+
+        Flap {
+          visible: !slot.separator
+          anchors.fill: parent
+          value: slot.ch
+          delay: slot.index * root.stagger
+        }
+      }
+    }
+  }
+
+
+  component Half: Item {
+    id: halfItem
+    property bool upper: true
+    property string text: " "
+    property real shade: 0
+    width: root.tileWidth
+    height: root.tileHeight / 2
+    clip: true
+
+    Rectangle {
+      width: parent.width
+      height: root.tileHeight
+      y: halfItem.upper ? 0 : -root.tileHeight / 2
+      radius: root.tileRadius
+      color: root.tileFace
+      // Light from above: the top flap a touch brighter than the bottom.
+      Rectangle {
+        anchors.fill: parent
+        radius: parent.radius
+        gradient: Gradient {
+          GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0.10) }
+          GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, 0.03) }
+          GradientStop { position: 0.5001; color: Qt.rgba(0, 0, 0, 0.10) }
+          GradientStop { position: 1.0; color: Qt.rgba(0, 0, 0, 0.04) }
+        }
+      }
+      Text {
+        anchors.centerIn: parent
+        text: halfItem.text
+        color: root.accent
+        font.family: root.fontName
+        font.pixelSize: Math.round(root.tileHeight * 0.74)
+        font.weight: Font.Bold
+      }
+    }
+    // Darkens a flap as it turns away from the light.
+    Rectangle {
+      anchors.fill: parent
+      color: "black"
+      opacity: halfItem.shade
+    }
+  }
+
+  // ── one split-flap tile ────────────────────────────────────────────────
+  component Flap: Item {
+    id: flap
+    property string value: " "
+    property int delay: 0
+    // What the halves show: the old character until the flip passes them.
+    property string shownTop: value
+    property string shownBottom: value
+    property string oldValue: value
+    property bool ready: false
+
+    Component.onCompleted: ready = true
+
+    onValueChanged: {
+      if (!ready || Style.reduceMotion) {
+        shownTop = shownBottom = oldValue = value
+        return
+      }
+      flip.stop()
+      shownBottom = oldValue
+      fallingTop.text = oldValue
+      risingBottom.text = value
+      shownTop = value
+      flip.start()
+    }
+
+    readonly property real half: height / 2
+
+    // Still halves: the new top, and the old bottom until the flip lands.
+    Half { upper: true; text: flap.shownTop }
+    Half { upper: false; y: flap.half; text: flap.shownBottom }
+
+    // The old top flap falls away…
+    Half {
+      id: fallingTop
+      upper: true
+      visible: flip.running && fallScale.yScale > 0.01
+      shade: (1 - fallScale.yScale) * 0.5
+      transform: Scale { id: fallScale; origin.y: flap.half; yScale: 1 }
+    }
+    // …and the new bottom flap swings down over the old one.
+    Half {
+      id: risingBottom
+      upper: false
+      y: flap.half
+      visible: flip.running && riseScale.yScale > 0.01
+      shade: (1 - riseScale.yScale) * 0.35
+      transform: Scale { id: riseScale; origin.y: 0; yScale: 0 }
+    }
+
+    // The hinge line across the middle of the tile.
+    Rectangle {
+      width: parent.width
+      height: 1
+      y: Math.round(flap.half)
+      color: Qt.rgba(0, 0, 0, 0.55)
+    }
+
+    SequentialAnimation {
+      id: flip
+      PropertyAction { target: fallScale; property: "yScale"; value: 1 }
+      PropertyAction { target: riseScale; property: "yScale"; value: 0 }
+      PauseAnimation { duration: flap.delay }
+      NumberAnimation { target: fallScale; property: "yScale"; to: 0; duration: 120; easing.type: Easing.InQuad }
+      NumberAnimation { target: riseScale; property: "yScale"; to: 1; duration: 140; easing.type: Easing.OutBounce }
+      ScriptAction { script: { flap.shownBottom = flap.value; flap.oldValue = flap.value } }
+    }
+  }
+}
