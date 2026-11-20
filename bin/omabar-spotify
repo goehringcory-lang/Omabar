@@ -12,12 +12,13 @@
     omabar-spotify set-discover-weekly [link]
         Save your Discover Weekly link for the player's one-click button.
 
-Playback goes through Spotify's own MPRIS interface, so `play` works without
-logging in. Listing playlists uses the Spotify Web API with your own app's
+Playback goes through Spotify's own MPRIS interface on the session bus (with
+busctl, which every systemd desktop has), so `play` works without logging in. Listing playlists uses the Spotify Web API with your own app's
 client id (PKCE, no client secret). The token is stored in
 ~/.config/omabar/spotify-token.json, readable only by you.
 """
 import base64
+import fcntl
 import hashlib
 import http.server
 import json
@@ -28,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -46,25 +48,61 @@ SCOPES = "playlist-read-private playlist-read-collaborative"
 
 # ── helpers ───────────────────────────────────────────────────────────────
 
+KINDS = "playlist|album|track|artist|show|episode"
+MPRIS_NAME = "org.mpris.MediaPlayer2.spotify"
+MPRIS_PATH = "/org/mpris/MediaPlayer2"
+MPRIS_PLAYER = "org.mpris.MediaPlayer2.Player"
+
+
 def to_uri(value):
     """Accept spotify:… URIs and open.spotify.com links; return a spotify: URI."""
     value = value.strip()
-    if value.startswith("spotify:"):
+    # Older links carry the owner: spotify:user:<name>:playlist:<id>.
+    match = re.fullmatch(rf"spotify:(?:user:[^:]+:)?({KINDS}):([A-Za-z0-9]+)", value)
+    if match:
+        return f"spotify:{match.group(1)}:{match.group(2)}"
+    if re.fullmatch(r"spotify:[A-Za-z0-9:_-]+", value):
         return value
-    match = re.match(r"https?://open\.spotify\.com/(?:intl-[a-z-]+/)?(playlist|album|track|artist|show|episode)/([A-Za-z0-9]+)", value)
+    match = re.match(rf"https?://open\.spotify\.com/(?:intl-[a-z-]+/)?(?:user/[^/]+/)?({KINDS})/([A-Za-z0-9]+)", value)
     if match:
         return f"spotify:{match.group(1)}:{match.group(2)}"
     raise SystemExit(f"omabar-spotify: not a Spotify link or URI: {value}")
 
 
 def to_web(uri):
-    _, kind, ident = uri.split(":", 2)
-    return f"https://open.spotify.com/{kind}/{ident}"
+    parts = uri.split(":")
+    if len(parts) == 3 and re.fullmatch(KINDS, parts[1]):
+        return f"https://open.spotify.com/{parts[1]}/{parts[2]}"
+    return "https://open.spotify.com/"
+
+
+def busctl(*args):
+    """Run busctl on the session bus; None when it can't be run or hangs.
+    Omarchy 4 no longer installs playerctl, so MPRIS is spoken directly."""
+    try:
+        return subprocess.run(["busctl", "--user", "--timeout=4", *args],
+                              capture_output=True, text=True, timeout=8)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def playback_status():
+    """"Playing", "Paused" or "Stopped"; "" when Spotify isn't on the bus or
+    isn't answering (closed, starting up, or shutting down)."""
+    result = busctl("get-property", MPRIS_NAME, MPRIS_PATH, MPRIS_PLAYER, "PlaybackStatus")
+    if result is None or result.returncode != 0:
+        return ""
+    match = re.search(r'"(\w+)"', result.stdout)
+    return match.group(1) if match else ""
 
 
 def spotify_running():
-    return subprocess.run(["playerctl", "-p", "spotify", "status"],
-                          capture_output=True).returncode == 0
+    return playback_status() != ""
+
+
+def open_uri(uri):
+    result = busctl("call", MPRIS_NAME, MPRIS_PATH, MPRIS_PLAYER, "OpenUri", "s", uri)
+    return result is not None and result.returncode == 0
 
 
 def read_json(path, fallback=None):
@@ -76,10 +114,14 @@ def read_json(path, fallback=None):
 
 
 def write_private(path, data):
+    """Write JSON readable only by you, replacing the file in one step so a
+    reader never sees half of it."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    partial = f"{path}.{os.getpid()}.tmp"
+    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as handle:
         json.dump(data, handle)
+    os.replace(partial, path)
 
 
 def api_request(url, data=None, headers=None):
@@ -92,20 +134,35 @@ def api_request(url, data=None, headers=None):
 
 def cmd_play(target):
     uri = to_uri(target)
-    if not spotify_running():
-        if shutil.which("omarchy-launch-spotify"):
-            subprocess.Popen(["omarchy-launch-spotify"], start_new_session=True,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        for _ in range(40):
+    # One at a time: a second click while Spotify is still starting would
+    # otherwise queue a second launch and a second request.
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    lock = open(os.path.join(CACHE_DIR, "play.lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return 0
+
+    if not spotify_running() and shutil.which("spotify") and shutil.which("omarchy-launch-spotify"):
+        subprocess.Popen(["omarchy-launch-spotify"], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(60):
             time.sleep(0.5)
             if spotify_running():
-                time.sleep(1.0)
+                time.sleep(1.5)  # on the bus a moment before it takes requests
                 break
     if spotify_running():
-        subprocess.run(["playerctl", "-p", "spotify", "open", uri])
-        return 0
-    # The web player doesn't take MPRIS OpenUri; open the page instead.
-    subprocess.Popen(["xdg-open", to_web(uri)], start_new_session=True)
+        # A Spotify that is still signing in, or restarting, can accept the
+        # request and drop it. Ask again until it is actually playing.
+        for attempt in range(4):
+            sent = open_uri(uri)
+            time.sleep(2.5)
+            if sent and playback_status() == "Playing":
+                return 0
+        return 0 if sent else 1
+    # No desktop app (or it never came up): open the page instead.
+    subprocess.Popen(["xdg-open", to_web(uri)], start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return 0
 
 
@@ -123,7 +180,7 @@ def cmd_login():
         print("  1. Open https://developer.spotify.com/dashboard and create an app.")
         print(f"  2. Add this Redirect URI: {REDIRECT_URI}")
         print("  3. Tick 'Web API', save, and copy the app's Client ID.\n")
-        cid = input("Client ID: ").strip()
+        cid = input("Client ID: ").strip().lower()
         if not re.fullmatch(r"[0-9a-f]{32}", cid):
             print("That doesn't look like a Client ID (32 hex characters).")
             return 1
@@ -154,7 +211,12 @@ def cmd_login():
         def log_message(self, *args):
             pass
 
-    server = http.server.HTTPServer(("127.0.0.1", REDIRECT_PORT), Handler)
+    try:
+        server = http.server.HTTPServer(("127.0.0.1", REDIRECT_PORT), Handler)
+    except OSError as error:
+        print(f"Couldn't listen on port {REDIRECT_PORT} for Spotify's answer ({error.strerror or error}).")
+        print("Another login may still be open. Close it and try again.")
+        return 1
     server.timeout = 1
     print("Opening Spotify in your browser to approve read access to your playlists…")
     webbrowser.open(url)
@@ -167,10 +229,21 @@ def cmd_login():
         print("Spotify didn't approve the login" + (f": {result['error']}" if result.get("error") else "."))
         return 1
 
-    token = api_request("https://accounts.spotify.com/api/token", urllib.parse.urlencode({
-        "grant_type": "authorization_code", "code": result["code"],
-        "redirect_uri": REDIRECT_URI, "client_id": cid, "code_verifier": verifier,
-    }).encode(), {"Content-Type": "application/x-www-form-urlencoded"})
+    try:
+        token = api_request("https://accounts.spotify.com/api/token", urllib.parse.urlencode({
+            "grant_type": "authorization_code", "code": result["code"],
+            "redirect_uri": REDIRECT_URI, "client_id": cid, "code_verifier": verifier,
+        }).encode(), {"Content-Type": "application/x-www-form-urlencoded"})
+    except urllib.error.HTTPError as error:
+        print(f"Spotify refused the login ({error.code}). Check the app's Client ID and Redirect URI.")
+        print(f"To enter the Client ID again, run: rm {APP_FILE} && {sys.argv[0]} login")
+        return 1
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        print(f"Couldn't reach Spotify: {error}")
+        return 1
+    if not token.get("access_token"):
+        print("Spotify's answer had no login in it. Try again.")
+        return 1
     token["expires_at"] = time.time() + token.get("expires_in", 3600) - 60
     write_private(TOKEN_FILE, token)
     try:
@@ -181,16 +254,31 @@ def cmd_login():
     return 0
 
 
-def access_token():
+class NeedsLogin(Exception):
+    """Spotify no longer accepts the saved login."""
+
+
+def access_token(force=False):
+    """A usable access token, None when no account is connected. Raises
+    NeedsLogin when the saved login was revoked or has expired for good."""
     token = read_json(TOKEN_FILE)
     cid = client_id()
-    if not token or not cid:
+    if not isinstance(token, dict) or not cid:
         return None
-    if time.time() < token.get("expires_at", 0):
+    if not force and token.get("access_token") and time.time() < token.get("expires_at", 0):
         return token["access_token"]
-    fresh = api_request("https://accounts.spotify.com/api/token", urllib.parse.urlencode({
-        "grant_type": "refresh_token", "refresh_token": token["refresh_token"], "client_id": cid,
-    }).encode(), {"Content-Type": "application/x-www-form-urlencoded"})
+    if not token.get("refresh_token"):
+        raise NeedsLogin()
+    try:
+        fresh = api_request("https://accounts.spotify.com/api/token", urllib.parse.urlencode({
+            "grant_type": "refresh_token", "refresh_token": token["refresh_token"], "client_id": cid,
+        }).encode(), {"Content-Type": "application/x-www-form-urlencoded"})
+    except urllib.error.HTTPError as error:
+        if error.code in (400, 401, 403):  # invalid_grant, invalid_client
+            raise NeedsLogin() from error
+        raise
+    if not fresh.get("access_token"):
+        raise NeedsLogin()
     fresh.setdefault("refresh_token", token["refresh_token"])
     fresh["expires_at"] = time.time() + fresh.get("expires_in", 3600) - 60
     write_private(TOKEN_FILE, fresh)
@@ -199,48 +287,73 @@ def access_token():
 
 # ── playlists ─────────────────────────────────────────────────────────────
 
+EXPIRED = "Your Spotify login expired. Connect again to refresh your playlists."
+
+
+def problem_text(error):
+    if isinstance(error, urllib.error.HTTPError):
+        if error.code == 429:
+            return "Spotify is rate limiting requests. Try again in a minute."
+        return f"Spotify answered with an error ({error.code})."
+    return "Couldn't reach Spotify. Check your connection."
+
+
+def fetch_playlists(token):
+    playlists = []
+    url = "https://api.spotify.com/v1/me/playlists?limit=50"
+    while url and len(playlists) < 200:
+        page = api_request(url, headers={"Authorization": f"Bearer {token}"})
+        for item in page.get("items") or []:
+            if not item or not item.get("uri"):
+                continue
+            images = item.get("images") or []
+            playlists.append({
+                "name": item.get("name") or "Untitled playlist",
+                "uri": item["uri"],
+                "owner": (item.get("owner") or {}).get("display_name") or "",
+                "tracks": ((item.get("tracks") or item.get("items") or {}).get("total") or 0),
+                "image": (images[-1].get("url") or "") if images else "",
+            })
+        url = page.get("next")
+    return playlists
+
+
 def cmd_playlists():
     cached = read_json(CACHE_FILE)
+    if not isinstance(cached, dict) or not isinstance(cached.get("playlists"), list):
+        cached = None
     if cached and time.time() - cached.get("at", 0) < CACHE_SECONDS:
         print(json.dumps({"connected": True, "playlists": cached["playlists"]}))
         return 0
+    # Whatever goes wrong, keep showing the last list that loaded.
+    stale = cached["playlists"] if cached else []
+
+    def answer(connected, error=""):
+        print(json.dumps({"connected": connected, "error": error, "playlists": stale}))
+        return 0
+
     try:
         token = access_token()
-    except Exception as error:  # expired grant, network down
-        token = None
-        problem = str(error)
-    else:
-        problem = ""
-    if not token:
-        stale = cached["playlists"] if cached else []
-        print(json.dumps({"connected": bool(stale), "error": problem, "playlists": stale}))
-        return 0
-
-    playlists = []
-    url = "https://api.spotify.com/v1/me/playlists?limit=50"
-    try:
-        while url and len(playlists) < 200:
-            page = api_request(url, headers={"Authorization": f"Bearer {token}"})
-            for item in page.get("items") or []:
-                if not item:
-                    continue
-                images = item.get("images") or []
-                playlists.append({
-                    "name": item.get("name", ""),
-                    "uri": item.get("uri", ""),
-                    "owner": (item.get("owner") or {}).get("display_name", ""),
-                    "tracks": ((item.get("tracks") or item.get("items") or {}).get("total", 0)),
-                    "image": images[-1]["url"] if images else "",
-                })
-            url = page.get("next")
-    except Exception as error:
-        stale = cached["playlists"] if cached else []
-        print(json.dumps({"connected": True, "error": str(error), "playlists": stale}))
-        return 0
+        if not token:
+            return answer(False)
+        try:
+            playlists = fetch_playlists(token)
+        except urllib.error.HTTPError as error:
+            if error.code != 401:
+                raise
+            # The token was revoked before its time was up: get a new one once.
+            playlists = fetch_playlists(access_token(force=True))
+    except NeedsLogin:
+        return answer(False, EXPIRED)
+    except urllib.error.HTTPError as error:
+        if error.code in (401, 403):
+            return answer(False, EXPIRED)
+        return answer(True, problem_text(error))
+    except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+        return answer(True, problem_text(error))
 
     os.makedirs(CACHE_DIR, exist_ok=True)
-    with open(CACHE_FILE, "w") as handle:
-        json.dump({"at": time.time(), "playlists": playlists}, handle)
+    write_private(CACHE_FILE, {"at": time.time(), "playlists": playlists})
     print(json.dumps({"connected": True, "playlists": playlists}))
     return 0
 
@@ -254,11 +367,18 @@ def cmd_set_discover(link=None):
     if not link:
         print("Open Discover Weekly in Spotify, choose Share > Copy link to playlist, and paste it here.\n")
         link = input("Link: ").strip()
-    uri = to_uri(link)
+    try:
+        uri = to_uri(link)
+    except SystemExit:
+        uri = ""
     if not uri.startswith("spotify:playlist:"):
-        print("That's not a playlist link.")
+        print("That's not a playlist link. It looks like https://open.spotify.com/playlist/…")
         return 1
-    result = subprocess.run(["omarchy", "bar", "set", "omabar-player", "discoverWeekly", uri])
+    try:
+        result = subprocess.run(["omarchy", "bar", "set", "omabar-player", "discoverWeekly", uri])
+    except OSError as error:
+        print(f"Couldn't save it: {error}")
+        return 1
     if result.returncode == 0:
         print("Saved. Discover Weekly is one click away in the player.")
     return result.returncode
@@ -284,4 +404,7 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    try:
+        sys.exit(main(sys.argv))
+    except (KeyboardInterrupt, EOFError):
+        sys.exit(130)

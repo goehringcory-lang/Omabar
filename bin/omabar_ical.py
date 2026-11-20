@@ -2,8 +2,9 @@
 
 Covers what calendar feeds such as Google's "secret address in iCal format"
 contain: all-day and timed events, time zones by IANA name, durations, and
-repeating events (RRULE with FREQ, INTERVAL, COUNT, UNTIL, BYDAY, BYMONTHDAY,
-BYMONTH), with EXDATE exceptions and RECURRENCE-ID overrides.
+repeating events (RRULE with FREQ, INTERVAL, COUNT, UNTIL, WKST, BYDAY,
+BYMONTHDAY, BYMONTH, BYSETPOS, plus RDATE), with EXDATE exceptions and
+RECURRENCE-ID overrides.
 """
 import datetime as dt
 import re
@@ -14,7 +15,7 @@ except ImportError:  # pragma: no cover - Python < 3.9
     ZoneInfo = None
 
 WEEKDAYS = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
-MAX_STEPS = 5000
+MAX_STEPS = 20000
 
 
 # ── lines and properties ──────────────────────────────────────────────────
@@ -133,19 +134,24 @@ def month_days(year, month):
     return (nxt - dt.timedelta(days=1)).day
 
 
+def integers(text):
+    return [int(t) for t in text.split(",") if re.fullmatch(r"\s*[+-]?\d+\s*", t)]
+
+
 def days_in_month(year, month, rule, default_day):
     """The days of one month a MONTHLY or YEARLY rule picks."""
     last = month_days(year, month)
-    picked = set()
-    if "BYMONTHDAY" in rule:
-        for token in rule["BYMONTHDAY"].split(","):
-            n = int(token)
+    by_date = by_weekday = None
+    if integers(rule.get("BYMONTHDAY", "")):
+        by_date = set()
+        for n in integers(rule["BYMONTHDAY"]):
             day = n if n > 0 else last + 1 + n
             if 1 <= day <= last:
-                picked.add(day)
-    elif "BYDAY" in rule:
+                by_date.add(day)
+    if re.search(r"(MO|TU|WE|TH|FR|SA|SU)", rule.get("BYDAY", "").upper()):
+        by_weekday = set()
         for token in rule["BYDAY"].split(","):
-            match = re.fullmatch(r"([+-]?\d+)?(MO|TU|WE|TH|FR|SA|SU)", token.strip())
+            match = re.fullmatch(r"([+-]?\d+)?(MO|TU|WE|TH|FR|SA|SU)", token.strip().upper())
             if not match:
                 continue
             weekday = WEEKDAYS.index(match.group(2))
@@ -153,17 +159,30 @@ def days_in_month(year, month, rule, default_day):
             if match.group(1):
                 n = int(match.group(1))
                 if -len(matches) <= n <= len(matches) and n != 0:
-                    picked.add(matches[n - 1] if n > 0 else matches[n])
+                    by_weekday.add(matches[n - 1] if n > 0 else matches[n])
             else:
-                picked.update(matches)
-    elif default_day <= last:
-        picked.add(default_day)
-    return sorted(picked)
+                by_weekday.update(matches)
+    if by_date is not None and by_weekday is not None:
+        picked = by_date & by_weekday      # e.g. Friday the 13th
+    elif by_date is not None:
+        picked = by_date
+    elif by_weekday is not None:
+        picked = by_weekday
+    else:
+        picked = {default_day} if default_day <= last else set()
+    picked = sorted(picked)
+    positions = integers(rule.get("BYSETPOS", ""))
+    if positions:                          # e.g. the last weekday of the month
+        picked = sorted({picked[n - 1] if n > 0 else picked[n]
+                         for n in positions if n != 0 and -len(picked) <= n <= len(picked)})
+    return picked
 
 
-def occurrences(start, rule, window_end):
+def occurrences(start, rule, window_end, window_start=None):
     """Start values (date, or naive wall-clock datetime) of a repeating
-    event, from its first through the window's end, COUNT or UNTIL."""
+    event, from its first through the window's end, COUNT or UNTIL. With a
+    window_start, a rule without COUNT skips ahead to it rather than walking
+    every occurrence since the event began."""
     base = start.value
     is_dt = isinstance(base, dt.datetime)
     first_day = base.date() if is_dt else base
@@ -173,43 +192,65 @@ def occurrences(start, rule, window_end):
         return dt.datetime.combine(day, clock) if is_dt else day
 
     freq = rule.get("FREQ", "").upper()
-    interval = max(1, int(rule.get("INTERVAL", "1") or 1))
+    if freq not in ("DAILY", "WEEKLY", "MONTHLY", "YEARLY"):
+        yield base
+        return
+    interval = max(1, int(rule["INTERVAL"])) if rule.get("INTERVAL", "").isdigit() else 1
     count = int(rule["COUNT"]) if rule.get("COUNT", "").isdigit() else None
     until = None
     if rule.get("UNTIL"):
         try:
-            until = in_zone_of(parse_when(rule["UNTIL"], {}, start.tz), start)
+            last = parse_when(rule["UNTIL"], {}, start.tz)
+            until = in_zone_of(last, start)
+            if last.all_day and is_dt:     # a bare date means through that day
+                until = dt.datetime.combine(last.value, dt.time.max)
         except ValueError:
             until = None
-    months = [int(m) for m in rule.get("BYMONTH", "").split(",") if m.strip().isdigit()]
+    months = [m for m in integers(rule.get("BYMONTH", "")) if 1 <= m <= 12]
+    weekdays = sorted({WEEKDAYS.index(t.strip().upper()[-2:]) for t in rule.get("BYDAY", "").split(",")
+                       if t.strip().upper()[-2:] in WEEKDAYS})
+    week_start = WEEKDAYS.index(rule["WKST"].upper()) if rule.get("WKST", "").upper() in WEEKDAYS else 0
+    # The first day of the week the event starts in, by the rule's own week.
+    week_anchor = first_day - dt.timedelta(days=(first_day.weekday() - week_start) % 7)
+
+    k = 0
+    if count is None and window_start is not None:
+        from_day = window_start.date() if isinstance(window_start, dt.datetime) else window_start
+        gap = (from_day - first_day).days
+        if gap > 0:
+            month_gap = (from_day.year - first_day.year) * 12 + from_day.month - first_day.month
+            k = {"DAILY": gap // interval, "WEEKLY": gap // (7 * interval),
+                 "MONTHLY": month_gap // interval, "YEARLY": month_gap // (12 * interval)}[freq]
+            k = max(0, k - 1)
 
     emitted = 0
-    for k in range(MAX_STEPS):
-        if freq == "DAILY":
-            days = [first_day + dt.timedelta(days=k * interval)]
-            if months and days[0].month not in months:
+    for k in range(k, k + MAX_STEPS):
+        try:
+            if freq == "DAILY":
+                period = first_day + dt.timedelta(days=k * interval)
+                days = [period] if not weekdays or period.weekday() in weekdays else []
+            elif freq == "WEEKLY":
+                period = week_anchor + dt.timedelta(weeks=k * interval)
+                days = sorted(period + dt.timedelta(days=(w - week_start) % 7)
+                              for w in (weekdays or [first_day.weekday()]))
+            elif freq == "MONTHLY":
+                index = first_day.month - 1 + k * interval
+                year, month = first_day.year + index // 12, index % 12 + 1
+                period = dt.date(year, month, 1)
+                days = [dt.date(year, month, d) for d in days_in_month(year, month, rule, first_day.day)]
+            else:
+                year = first_day.year + k * interval
+                period = dt.date(year, 1, 1)
                 days = []
-        elif freq == "WEEKLY":
-            monday = first_day - dt.timedelta(days=first_day.weekday()) + dt.timedelta(weeks=k * interval)
-            wanted = [WEEKDAYS.index(t.strip()[-2:]) for t in rule.get("BYDAY", "").split(",") if t.strip()[-2:] in WEEKDAYS]
-            days = sorted(monday + dt.timedelta(days=w) for w in (wanted or [first_day.weekday()]))
-        elif freq == "MONTHLY":
-            index = first_day.month - 1 + k * interval
-            year, month = first_day.year + index // 12, index % 12 + 1
-            days = [] if months and month not in months else \
-                [dt.date(year, month, d) for d in days_in_month(year, month, rule, first_day.day)]
-        elif freq == "YEARLY":
-            year = first_day.year + k * interval
-            days = []
-            for month in (months or [first_day.month]):
-                if "BYDAY" in rule or "BYMONTHDAY" in rule or month == first_day.month:
+                for month in (months or [first_day.month]):
                     days += [dt.date(year, month, d) for d in days_in_month(year, month, rule, first_day.day)]
-            days.sort()
-        else:
-            yield base
+                days.sort()
+        except (OverflowError, ValueError):   # walked past year 9999
             return
-        if not days and k * interval > 0 and freq == "DAILY":
-            continue
+        if at(period) > window_end:
+            return
+        if months:
+            days = [day for day in days if day.month in months]
         for day in days:
             if day < first_day:
                 continue
@@ -222,13 +263,6 @@ def occurrences(start, rule, window_end):
             yield value
         if days and at(days[-1]) > window_end:
             return
-        if not days and freq in ("MONTHLY", "YEARLY", "WEEKLY"):
-            # Keep walking: a rule can skip whole periods (e.g. 31st of short months).
-            last_day = first_day
-            if freq == "YEARLY":
-                last_day = dt.date(first_day.year + k * interval, 12, 31)
-            if at(last_day) > window_end and freq == "YEARLY":
-                return
 
 
 # ── events ────────────────────────────────────────────────────────────────
@@ -272,8 +306,9 @@ def first(raw, key):
 
 def expand_events(calendar, window_start, window_end, local):
     """Each occurrence overlapping [window_start, window_end) as
-    {title, start: When, end: When, location}."""
-    default_tz = zone(calendar.get("tz"))
+    {title, start: When, end: When, location}. `local` is the viewer's zone;
+    times with no zone of their own are read in the calendar's, else in it."""
+    default_tz = zone(calendar.get("tz")) or local
     overrides, masters = {}, []
     for raw in calendar["events"]:
         if "RECURRENCE-ID" in raw:
@@ -285,33 +320,55 @@ def expand_events(calendar, window_start, window_end, local):
         params, value = first(raw, "DTSTART")
         if not value:
             return None
-        start = parse_when(value, params, default_tz)
-        end_params, end_value = first(raw, "DTEND")
-        if end_value:
-            end = parse_when(end_value, end_params, default_tz)
+        try:
+            start = parse_when(value, params, default_tz)
+            end_params, end_value = first(raw, "DTEND")
+            end = parse_when(end_value, end_params, default_tz) if end_value else None
+        except ValueError:
+            return None                    # a date this reader can't make sense of
+        length = None
+        if end is not None and end.all_day == start.all_day:
             length = end.instant(local) - start.instant(local)
-        else:
-            length = parse_duration(first(raw, "DURATION")[1]) if "DURATION" in raw else None
-            if length is None:
-                length = dt.timedelta(days=1) if start.all_day else dt.timedelta(0)
+        elif "DURATION" in raw:
+            length = parse_duration(first(raw, "DURATION")[1])
+        if length is None or length < dt.timedelta(0):
+            length = dt.timedelta(days=1) if start.all_day else dt.timedelta(0)
+        if start.all_day:                  # whole days only, and at least one
+            length = dt.timedelta(days=max(1, length.days))
         return start, length
+
+    def wall(instant, start):
+        """An instant the way `start` is written: its date, or the wall clock in its zone."""
+        if start.all_day:
+            return instant.astimezone(local).date()
+        return instant.astimezone(start.tz or local).replace(tzinfo=None)
 
     def emit(raw, start, length, out):
         if first(raw, "STATUS")[1].upper() == "CANCELLED":
             return
-        begins = start.instant(local)
-        ends = begins + length
+        try:
+            begins = start.instant(local)
+            ends = begins + length
+            end_value = start.value + length
+        except (OverflowError, ValueError):
+            return
         if ends <= window_start and not (length == dt.timedelta(0) and begins >= window_start):
             return
         if begins >= window_end:
             return
-        end_when = When(start.value + length, start.tz) if not start.all_day else When(start.value + length)
         out.append({
-            "title": unescape(first(raw, "SUMMARY")[1]) or "(No title)",
+            "title": unescape(first(raw, "SUMMARY")[1]).strip() or "(No title)",
             "start": start,
-            "end": end_when,
-            "location": unescape(first(raw, "LOCATION")[1]),
+            "end": When(end_value, start.tz),
+            "location": unescape(first(raw, "LOCATION")[1]).strip(),
         })
+
+    def same_kind(when, start):
+        """`when` as an occurrence value of an event starting at `start`, or
+        None when one is a date and the other a time."""
+        if when.all_day != start.all_day:
+            return None
+        return in_zone_of(when, start)
 
     out = []
     for raw in masters:
@@ -321,27 +378,41 @@ def expand_events(calendar, window_start, window_end, local):
         start, length = built
         uid = first(raw, "UID")[1]
         rrule = first(raw, "RRULE")[1]
-        if not rrule:
+        extra = raw.get("RDATE", [])
+        if not rrule and not extra:
             emit(raw, start, length, out)
             continue
-        skipped = set()
-        for params, value in raw.get("EXDATE", []):
+        skipped, skipped_days = set(), set()
+        exceptions = [(params, token) for params, value in raw.get("EXDATE", []) for token in value.split(",")]
+        exceptions += [first(over, "RECURRENCE-ID") for over in overrides.get(uid, [])]
+        for params, token in exceptions:
+            try:
+                when = parse_when(token, params, start.tz)
+            except ValueError:
+                continue
+            if when.all_day and not start.all_day:
+                skipped_days.add(when.value)  # a date cancels that day's occurrence
+            else:
+                skipped.add(in_zone_of(when, start))
+        values = []
+        try:
+            if rrule:
+                values = list(occurrences(start, parse_rule(rrule), wall(window_end, start),
+                                          wall(window_start - length, start) - dt.timedelta(days=1)))
+            else:
+                values = [start.value]
+        except (ValueError, OverflowError):
+            values = [start.value]            # a rule this reader can't follow: show the first
+        for params, value in extra:
             for token in value.split(","):
                 try:
-                    skipped.add(in_zone_of(parse_when(token, params, start.tz), start))
+                    value_when = same_kind(parse_when(token.split("/")[0], params, start.tz), start)
                 except ValueError:
-                    pass
-        for over in overrides.get(uid, []):
-            params, value = first(over, "RECURRENCE-ID")
-            try:
-                skipped.add(in_zone_of(parse_when(value, params, start.tz), start))
-            except ValueError:
-                pass
-        limit = in_zone_of(When(window_end.replace(tzinfo=None) if start.tz is None else
-                                window_end.astimezone(start.tz).replace(tzinfo=None), start.tz), start) \
-            if not start.all_day else window_end.date()
-        for value in occurrences(start, parse_rule(rrule), limit):
-            if value in skipped:
+                    continue
+                if value_when is not None:
+                    values.append(value_when)
+        for value in sorted(set(values)):
+            if value in skipped or (skipped_days and not start.all_day and value.date() in skipped_days):
                 continue
             emit(raw, When(value, start.tz), length, out)
     for group in overrides.values():
