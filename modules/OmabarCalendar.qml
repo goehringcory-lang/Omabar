@@ -66,6 +66,7 @@ Item {
       if (!data) return
       card.connected = data.connected === true
       card.calendars = Array.isArray(data.calendars) ? data.calendars : []
+      card.colors = Array.isArray(data.colors) ? data.colors : []
     })
     loadEvents()
   }
@@ -115,6 +116,9 @@ Item {
         }
         onToggleCalendar: function(id) {
           root.run(["toggle", id], function() { root.refresh() })
+        }
+        onColorCalendar: function(id, color) {
+          root.run(["color", id, color || "default"], function() { root.refresh() })
         }
         onConnectRequested: {
           if (root.bar) root.bar.run("omarchy-launch-floating-terminal-with-presentation " + Util.shellQuote(Util.shellQuote(root.helper) + " connect"))
