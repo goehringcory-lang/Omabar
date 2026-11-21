@@ -471,7 +471,7 @@ jq -S \
             { id: "omabar-mail", type: "qml", source: ($dir + "/modules/OmabarMail.qml"), app: "thunderbird" },
             { id: "omabar-settings", type: "command", text: "󰒓",
               tooltip: "Omarchy settings", onClick: "omarchy-menu toggle setup" },
-            # Omabar's own battery reads each pack, so a T480's removable
+            # Omabar battery widget: reads each pack, so a T480 removable
             # battery shows first and the internal one after it runs out.
             { id: "omabar-battery", type: "qml", source: ($dir + "/modules/OmabarBattery.qml") }
           ]
