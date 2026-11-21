@@ -2,11 +2,14 @@
 """Give a clone of Omarchy's world clock (Elsewhen) split-flap times.
 
     tools/omabar-elsewhen-patch.py <clone dir> <omabar modules dir>
+    tools/omabar-elsewhen-patch.py --undo <clone dir>
 
 Copies OmabarFlapText.qml into the clone and swaps each city's big time for a
 row of flap tiles in the theme's accent color. Safe to run again: a clone
 that is already patched is left alone. If Elsewhen has changed so the edit no
 longer matches, nothing is written and the clone keeps working unpatched.
+--undo puts the clone's own big time back and deletes the copied tiles, which
+`omabar-setup --uninstall` does for a world clock clone you made yourself.
 """
 import pathlib
 import shutil
@@ -38,7 +41,22 @@ NEW = """      // Omabar: split-flap digits in the accent color.
 MARK = "// Omabar: split-flap digits"
 
 
+def undo(clone: pathlib.Path) -> int:
+    row = clone / "CityRow.qml"
+    text = row.read_text(encoding="utf-8")
+    if MARK in text:
+        if text.count(NEW) != 1:
+            print(f"omabar: couldn't take the split-flap times out of {clone}", file=sys.stderr)
+            return 1
+        row.write_text(text.replace(NEW, OLD), encoding="utf-8")
+        print(f"omabar: {clone.name} uses its own times again")
+    (clone / "OmabarFlapText.qml").unlink(missing_ok=True)
+    return 0
+
+
 def main() -> int:
+    if len(sys.argv) == 3 and sys.argv[1] == "--undo":
+        return undo(pathlib.Path(sys.argv[2]))
     if len(sys.argv) != 3:
         print(__doc__, file=sys.stderr)
         return 2

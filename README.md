@@ -14,6 +14,13 @@ The player's chevron opens a playlist menu: one-click **Lofi Beats**, **Discover
 
 **Right:** only five things stay in view: AI usage (Omarchy's agents panel, plus [ai-usagebar](https://github.com/akitaonrails/ai-usagebar) when installed), notifications, Thunderbird mail (it turns the accent color when new mail arrives in any inbox), Omarchy settings, and battery. Everything else is folded into a drawer behind the chevron at the far left of the group. Hover it (or click to keep it open) and a glass panel drops below the bar with a tile for each control, [Omaland](https://github.com/bobby-nicholas/omaland) when installed, Bluetooth, network, sound, display and keyboard layout, plus your apps' tray icons. A tile opens that control's own Omarchy panel; a tray app opens on click and shows its menu on right-click. **Edit** in the panel hides anything you don't want there. The bar itself never widens, so nothing spills over the clock.
 
+## Requirements
+
+- Omarchy 4 (the Quattro shell). Omabar replaces its bar; it doesn't work with Waybar on Omarchy 3.
+- `jq`, `python3` and `busctl`, which Omarchy already includes. Nothing else is installed.
+- Optional: the Spotify desktop app for the player, Thunderbird for the mail button, and the companion plugins below.
+- Network services, only when you use them: Spotify's Web API (playlist list and Liked Songs, after you connect your own Spotify developer app), Google Calendar (the secret iCal links or API you connect), and the US National Weather Service (`api.weather.gov`) for weather.
+
 ## Install
 
 ```bash
@@ -86,14 +93,23 @@ The mail button turns the accent color while any inbox in Thunderbird, across al
 
 watches the shell for ten seconds and prints its memory, its CPU, Hyprland's CPU and how often it wakes up. Each run is saved, and `omabar-stats --log` lists them side by side, so you can compare before and after an update. The bar is one part of Omarchy's shell, so the numbers are for the whole shell; measure in the same state each time (music playing or not, no drop-downs open, mouse off the bar).
 
-## Undo
+## Undo or remove
+
+To go back to your old bar and keep Omabar installed:
 
 ```bash
-~/.config/omarchy/plugins/goehringcory.omabar/bin/omabar-setup --restore   # your old layout
-omarchy bar reset                                                          # or just the built-in bar
+~/.config/omarchy/plugins/goehringcory.omabar/bin/omabar-setup --restore   # your layout from before setup
 ```
 
-Restore before removing the plugin, since the script goes with it. It puts back the layout from before setup and removes the update hook. Setting Omabar up again later backs up whatever layout you have then.
+To remove Omabar completely:
+
+```bash
+~/.config/omarchy/plugins/goehringcory.omabar/bin/omabar-setup --uninstall
+```
+
+`--uninstall` puts back the bar layout you had before setup (or Omarchy's default bar if there is no backup), removes the world clock copy setup made (a world clock copy you made yourself is kept and gets its own times back), deletes the update hook, deletes `~/.config/omabar/` (your Spotify login, calendar addresses and world clock cities) and `~/.cache/omabar/`, and then runs `omarchy plugin remove goehringcory.omabar` for you. Nothing of Omabar's is left behind.
+
+If you already removed it with `omarchy plugin remove` (or from a plugin manager) and the bar looks empty, run `omarchy bar defaults` for Omarchy's default bar. The next `omarchy update` also does this for you: the update hook notices Omabar is gone, puts back your layout from before setup, and deletes itself. `~/.config/omabar/` and `~/.cache/omabar/` can then be deleted by hand.
 
 ## Customize
 

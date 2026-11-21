@@ -5,8 +5,10 @@
   "version": "0.1.0",
   "author": "Cory Goehring",
   "license": "MIT",
-  "description": "A floating glass-pill bar for Omarchy: workspace dots, a Spotify mini player, AI usage, and a hover drawer for system controls. Follows your Omarchy theme.",
-  "kinds": ["bar"],
+  "description": "A floating glass bar for Omarchy 4: workspace dots with a water-drop switch, a Spotify mini player with playlists, a split-flap clock with Google Calendar, weather, AI usage, and a drop-down drawer for system controls. Follows your Omarchy theme.",
+  "kinds": [
+    "bar"
+  ],
   "entryPoints": {
     "bar": "Bar.qml"
   },
