@@ -154,11 +154,12 @@ class FetchAndCache(unittest.TestCase):
         self.w.time.sleep = lambda seconds: None
         self.calls = []
 
-    def stub_api(self, forecast_periods=None, hourly_periods=None, alerts=None, fail_all=None):
+    def stub_api(self, forecast_periods=None, hourly_periods=None, alerts=None, fail_all=None, radar_station="KHNX"):
         point_resp = {
             "properties": {
                 "forecast": "https://api.weather.gov/gridpoints/HNX/74,97/forecast",
                 "forecastHourly": "https://api.weather.gov/gridpoints/HNX/74,97/forecast/hourly",
+                "radarStation": radar_station,
                 "relativeLocation": {"properties": {"city": "El Portal", "state": "CA"}},
             }
         }
@@ -194,6 +195,18 @@ class FetchAndCache(unittest.TestCase):
 
         self.w.api_get = api_get
 
+    def test_radar_url_for_station(self):
+        self.assertEqual(
+            self.w.radar_url_for_station("KHNX"),
+            "https://radar.weather.gov/station/khnx/standard",
+        )
+        self.assertEqual(
+            self.w.radar_url_for_station("  kdix "),
+            "https://radar.weather.gov/station/kdix/standard",
+        )
+        self.assertEqual(self.w.radar_url_for_station(""), "")
+        self.assertEqual(self.w.radar_url_for_station("../bad"), "")
+
     def test_fetches_caches_and_selects_active_hour(self):
         self.stub_api(alerts=[
             {"properties": {"event": "Wind Advisory", "severity": "Moderate", "headline": "Gusty winds expected"}},
@@ -203,6 +216,7 @@ class FetchAndCache(unittest.TestCase):
         first = self.w.fetch_forecast(37.6755, -119.7824, days_count=5, units="F", now=now)
         self.assertTrue(first["ok"])
         self.assertEqual(first["location"], "El Portal, CA")
+        self.assertEqual(first["radarUrl"], "https://radar.weather.gov/station/khnx/standard")
         self.assertEqual(first["current"]["temp"], 59)
         self.assertEqual(first["current"]["humidity"], 38)
         self.assertEqual(first["current"]["high"], 61)
@@ -214,6 +228,7 @@ class FetchAndCache(unittest.TestCase):
         second = self.w.fetch_forecast(37.6755, -119.7824, days_count=5, units="F", now=now)
         self.assertEqual(len(self.calls), call_count, "second call comes from cache")
         self.assertEqual(second["location"], "El Portal, CA")
+        self.assertEqual(second["radarUrl"], "https://radar.weather.gov/station/khnx/standard")
 
         # --force bypasses the forecast cache.
         self.w.fetch_forecast(37.6755, -119.7824, days_count=5, units="F", force=True, now=now)
@@ -230,6 +245,7 @@ class FetchAndCache(unittest.TestCase):
         self.assertTrue(stale["stale"])
         self.assertIn("saved forecast", stale["error"])
         self.assertEqual(stale["location"], "El Portal, CA")
+        self.assertEqual(stale["radarUrl"], "https://radar.weather.gov/station/khnx/standard")
 
     def test_cli_returns_clean_json_on_error(self):
         self.stub_api(fail_all=http_error(404))
@@ -239,6 +255,7 @@ class FetchAndCache(unittest.TestCase):
         self.assertEqual(rc, 0)
         got = json.loads(out.getvalue())
         self.assertFalse(got["ok"])
+        self.assertEqual(got["radarUrl"], "")
         self.assertIn("US", got["error"])
 
 
