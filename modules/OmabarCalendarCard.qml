@@ -1,6 +1,7 @@
 // The calendar card the split-flap clock drops down: a month grid with a dot
 // for each calendar that has something on a day, the chosen day's agenda, and
-// a picker for which Google calendars show, each in its Google color.
+// a picker for which Google calendars show, each in its Google color or one
+// you pick from the palette beside it.
 import QtQuick
 import qs.Commons
 import qs.Commons as Commons
@@ -22,8 +23,13 @@ Item {
   property string error: ""
   property var events: []
   property var calendars: []
+  // Colors a calendar can be given: [{ name, color }], from omabar-gcal.
+  property var colors: []
+  // The calendar whose palette is open in the picker, or "".
+  property string recoloring: ""
 
   signal toggleCalendar(string id)
+  signal colorCalendar(string id, string color)   // color "" goes back to Google's
   signal connectRequested()
   signal openEvent(string link)
   signal monthShown(int year, int month)   // month is 1-12
@@ -55,6 +61,7 @@ Item {
     card.viewMonth = card.today.getMonth()
     card.selected = new Date(card.today.getFullYear(), card.today.getMonth(), card.today.getDate())
     card.pickingCalendars = false
+    card.recoloring = ""
   }
 
   function step(delta) {
@@ -434,9 +441,16 @@ Item {
 
           Repeater {
             model: group.members
+            Column {
+              id: calEntry
+              required property var modelData
+              readonly property bool recoloring: card.recoloring === modelData.id
+              width: parent.width
+              spacing: Style.space(2)
+
             Rectangle {
               id: calRow
-              required property var modelData
+              readonly property var modelData: calEntry.modelData
               width: parent.width
               height: Style.space(32)
               radius: Style.space(8)
@@ -465,7 +479,7 @@ Item {
               Text {
                 anchors.left: box.right
                 anchors.leftMargin: Style.space(10)
-                anchors.right: parent.right
+                anchors.right: paletteButton.left
                 anchors.rightMargin: Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
                 text: calRow.modelData.name
@@ -478,6 +492,91 @@ Item {
               }
               HoverHandler { id: calHover; cursorShape: Qt.PointingHandCursor }
               TapHandler { id: calTap; onTapped: card.toggleCalendar(calRow.modelData.id) }
+
+              // Opens this calendar's palette.
+              Rectangle {
+                id: paletteButton
+                visible: card.colors.length > 0
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(6)
+                anchors.verticalCenter: parent.verticalCenter
+                width: Style.space(24)
+                height: width
+                radius: width / 2
+                color: Qt.rgba(card.ink.r, card.ink.g, card.ink.b, paletteTap.pressed ? 0.20 : (paletteHover.hovered || calEntry.recoloring) ? 0.14 : 0.0)
+                Behavior on color { ColorAnimation { duration: Style.duration(100) } }
+                Text {
+                  anchors.centerIn: parent
+                  text: "\u{F03D8}"   // palette
+                  color: calRow.modelData.color
+                  font.family: card.fontName
+                  font.pixelSize: Style.font.bodySmall
+                }
+                HoverHandler { id: paletteHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler {
+                  id: paletteTap
+                  onTapped: card.recoloring = calEntry.recoloring ? "" : calRow.modelData.id
+                }
+              }
+            }
+
+            // The palette: tap a swatch to give the calendar that color.
+            Flow {
+              visible: calEntry.recoloring
+              width: parent.width
+              leftPadding: Style.space(34)
+              rightPadding: Style.space(8)
+              bottomPadding: Style.space(4)
+              spacing: Style.space(6)
+
+              Repeater {
+                model: card.colors
+                Rectangle {
+                  id: swatch
+                  required property var modelData
+                  readonly property bool current: String(calEntry.modelData.color).toLowerCase() === String(modelData.color).toLowerCase()
+                  width: Style.space(20)
+                  height: width
+                  radius: width / 2
+                  color: modelData.color
+                  border.width: current ? 2 : 0
+                  border.color: card.ink
+                  scale: swatchTap.pressed ? 0.88 : swatchHover.hovered ? 1.12 : 1
+                  Behavior on scale { NumberAnimation { duration: Style.duration(120); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut } }
+                  HoverHandler { id: swatchHover; cursorShape: Qt.PointingHandCursor }
+                  TapHandler {
+                    id: swatchTap
+                    onTapped: { card.colorCalendar(calEntry.modelData.id, swatch.modelData.color); card.recoloring = "" }
+                  }
+                }
+              }
+
+              // Back to the calendar's Google color.
+              Rectangle {
+                visible: !!calEntry.modelData.googleColor
+                width: Style.space(20)
+                height: width
+                radius: width / 2
+                color: "transparent"
+                border.width: 2
+                border.color: calEntry.modelData.googleColor || "transparent"
+                scale: resetTap.pressed ? 0.88 : resetHover.hovered ? 1.12 : 1
+                Behavior on scale { NumberAnimation { duration: Style.duration(120); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut } }
+                Text {
+                  anchors.centerIn: parent
+                  text: "\u{F0450}"   // refresh: Google's color
+                  color: card.ink
+                  opacity: 0.7
+                  font.family: card.fontName
+                  font.pixelSize: Style.font.caption
+                }
+                HoverHandler { id: resetHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler {
+                  id: resetTap
+                  onTapped: { card.colorCalendar(calEntry.modelData.id, ""); card.recoloring = "" }
+                }
+              }
+            }
             }
           }
         }
@@ -494,7 +593,7 @@ Item {
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
         label: card.pickingCalendars ? "\u{F0141}  Back" : "\u{F00ED}  Calendars"
-        onPicked: card.pickingCalendars = !card.pickingCalendars
+        onPicked: { card.pickingCalendars = !card.pickingCalendars; card.recoloring = "" }
       }
 
       Chip {

@@ -13,6 +13,15 @@
         Google color and whether Omabar shows it, as JSON.
     omabar-gcal toggle <calendar id>
         Show or hide one calendar in the bar's calendar.
+    omabar-gcal color
+        Pick a color for each calendar from a list.
+    omabar-gcal color <calendar> <color>
+        Give one calendar a color. <calendar> is its name (or the start of
+        it) or its id; <color> is a name from the list below, a #rrggbb hex
+        color, or "default" to go back to its Google color:
+        orange, tangerine, tomato, flamingo, banana, sage, basil, peacock,
+        blueberry, lavender, grape, graphite, cocoa.
+        Example: omabar-gcal color "Work" orange
     omabar-gcal events [YYYY-MM]
         Print events for that month (default: this month) plus the next 14
         days from the calendars you show, each with its Google color, as JSON.
@@ -50,6 +59,16 @@ ICAL_FILE = os.path.join(CONFIG_DIR, "ical-calendars.json")
 # Google Calendar's own calendar colors, handed out in order to linked calendars.
 PALETTE = ["#039be5", "#33b679", "#8e24aa", "#e67c73", "#f6bf26", "#f4511e",
            "#7986cb", "#0b8043", "#d50000", "#3f51b5", "#795548", "#616161"]
+# Colors you can give a calendar (omabar-gcal color, or the bar's Calendars
+# list). Google's calendar colors plus a true orange. Kept in calendars.json,
+# which setup never touches, so a choice lasts until you change it.
+COLORS = [
+    ("Orange", "#ff8c00"), ("Tangerine", "#f4511e"), ("Tomato", "#d50000"),
+    ("Flamingo", "#e67c73"), ("Banana", "#f6bf26"), ("Sage", "#33b679"),
+    ("Basil", "#0b8043"), ("Peacock", "#039be5"), ("Blueberry", "#3f51b5"),
+    ("Lavender", "#7986cb"), ("Grape", "#8e24aa"), ("Graphite", "#616161"),
+    ("Cocoa", "#795548"),
+]
 CACHE_SECONDS = 300
 
 SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
@@ -438,6 +457,34 @@ def fetch_calendars():
     return calendars
 
 
+def chosen_colors():
+    colors = prefs().get("colors", {})
+    return colors if isinstance(colors, dict) else {}
+
+
+def color_of(calendar_id, fallback, colors=None):
+    """The color you picked for a calendar, else its own (Google) color."""
+    picked = (chosen_colors() if colors is None else colors).get(calendar_id)
+    return picked if isinstance(picked, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", picked) else fallback
+
+
+def parse_color(text):
+    """A color name from COLORS or #rrggbb, as #rrggbb; "" for default; None if unknown."""
+    text = text.strip().lower()
+    if text in ("default", "google", "reset", "none"):
+        return ""
+    for name, value in COLORS:
+        if text == name.lower():
+            return value
+    if re.fullmatch(r"#?[0-9a-f]{6}", text):
+        return "#" + text.lstrip("#")
+    return None
+
+
+def color_name(value):
+    return next((name for name, v in COLORS if v.lower() == value.lower()), value)
+
+
 def shown(calendar, chosen):
     # Until you pick, Omabar shows what Google Calendar itself shows.
     if calendar["id"] in chosen:
@@ -466,6 +513,10 @@ def all_calendars():
         calendars.append({"id": c["id"], "name": c["name"], "color": c.get("color", PALETTE[0]),
                           "owned": c.get("owned", True), "primary": False, "googleSelected": True,
                           "ical": True})
+    colors = chosen_colors()
+    for c in calendars:
+        c["googleColor"] = c["color"]
+        c["color"] = color_of(c["id"], c["color"], colors)
     return calendars
 
 
@@ -481,7 +532,8 @@ def cmd_calendars():
     calendars = all_calendars()
     for calendar in calendars:
         calendar["shown"] = shown(calendar, chosen)
-    print(json.dumps({"connected": True, "calendars": calendars}))
+    print(json.dumps({"connected": True, "calendars": calendars,
+                      "colors": [{"name": n, "color": v} for n, v in COLORS]}))
     return 0
 
 
@@ -496,6 +548,95 @@ def cmd_toggle(calendar_id):
     clear_cache("gcal-events")
     print(json.dumps({"id": calendar_id, "shown": chosen[calendar_id]}))
     return 0
+
+
+def find_calendar(calendars, text):
+    """The calendar named by id, by name, or by the start of its name."""
+    wanted = text.strip().lower()
+    for test in (lambda c: c["id"].lower() == wanted,
+                 lambda c: c["name"].lower() == wanted,
+                 lambda c: c["name"].lower().startswith(wanted),
+                 lambda c: wanted in c["name"].lower()):
+        found = [c for c in calendars if test(c)]
+        if len(found) == 1:
+            return found[0], ""
+        if len(found) > 1:
+            return None, "More than one calendar matches: " + ", ".join(c["name"] for c in found)
+    return None, f"No calendar called \"{text}\". Run omabar-gcal color to see them."
+
+
+def set_color(calendar_id, value):
+    data = prefs()
+    colors = data.get("colors")
+    if not isinstance(colors, dict):
+        colors = data["colors"] = {}
+    if value:
+        colors[calendar_id] = value
+    else:
+        colors.pop(calendar_id, None)
+    write_private(PREFS_FILE, data)
+    clear_cache("gcal-events")
+
+
+def cmd_color(rest):
+    calendars = all_calendars()
+    if not calendars:
+        print("No calendars yet. Run omabar-gcal connect first.")
+        return 1
+    if len(rest) == 2:
+        calendar, problem = find_calendar(calendars, rest[0])
+        value = parse_color(rest[1])
+        if calendar is None:
+            print(problem, file=sys.stderr)
+            return 1
+        if value is None:
+            print(f"Unknown color \"{rest[1]}\". Pick one of: "
+                  + ", ".join(n.lower() for n, _ in COLORS) + ", a #rrggbb color, or default.", file=sys.stderr)
+            return 1
+        set_color(calendar["id"], value)
+        print(f"{calendar['name']} is now {color_name(value) if value else 'its Google color'}.")
+        return 0
+    if rest:
+        print(__doc__, file=sys.stderr)
+        return 2
+
+    # Interactive: pick a calendar, then a color, until Enter on an empty line.
+    def swatch(value):
+        r, g, b = (int(value[i:i + 2], 16) for i in (1, 3, 5))
+        return f"\033[38;2;{r};{g};{b}m\u25cf\033[0m" if sys.stdout.isatty() else "*"
+
+    while True:
+        print("\nYour calendars:")
+        for i, c in enumerate(calendars, 1):
+            print(f"  {i:>2}. {swatch(c['color'])} {c['name']}  ({color_name(c['color'])})")
+        try:
+            answer = input("\nRecolor which? (number, or Enter to finish): ").strip()
+        except EOFError:
+            answer = ""
+        if not answer:
+            return 0
+        if not answer.isdigit() or not 1 <= int(answer) <= len(calendars):
+            print("Type one of the numbers above.")
+            continue
+        calendar = calendars[int(answer) - 1]
+        print()
+        for i, (name, value) in enumerate(COLORS, 1):
+            print(f"  {i:>2}. {swatch(value)} {name}")
+        print(f"  {len(COLORS) + 1:>2}. {swatch(calendar['googleColor'])} Google's color")
+        try:
+            pick = input(f"Color for {calendar['name']} (number, name or #rrggbb): ").strip()
+        except EOFError:
+            return 0
+        if pick.isdigit() and 1 <= int(pick) <= len(COLORS) + 1:
+            value = COLORS[int(pick) - 1][1] if int(pick) <= len(COLORS) else ""
+        else:
+            value = parse_color(pick)
+        if value is None:
+            print("That isn't one of the colors.")
+            continue
+        set_color(calendar["id"], value)
+        calendar["color"] = value or calendar["googleColor"]
+        print(f"{calendar['name']} is now {color_name(value) if value else 'its Google color'}.")
 
 
 # ── events ────────────────────────────────────────────────────────────────
@@ -524,7 +665,7 @@ def linked_events(calendar, start, end, tz):
             "allDay": item["start"].all_day,
             "location": item["location"],
             "calendar": calendar["name"],
-            "color": calendar.get("color", PALETTE[0]),
+            "color": color_of(calendar["id"], calendar.get("color", PALETTE[0])),
             "link": f"https://calendar.google.com/calendar/r/day/{day.year}/{day.month}/{day.day}",
         })
     return events, problem
@@ -602,7 +743,7 @@ def cmd_events(month=None):
                 "allDay": all_day,
                 "location": item.get("location", ""),
                 "calendar": calendar["name"],
-                "color": palette.get(item.get("colorId", ""), calendar["color"]),
+                "color": palette.get(item.get("colorId", ""), color_of(calendar["id"], calendar["color"])),
                 "link": item.get("htmlLink", ""),
             })
     events.sort(key=lambda e: (e["start"] or "", not e["allDay"]))
@@ -639,6 +780,8 @@ def main(argv):
         return cmd_connect()
     if command == "disconnect":
         return cmd_disconnect()
+    if command == "color":
+        return cmd_color(rest)
     if command == "toggle" and len(rest) != 1:
         print(__doc__, file=sys.stderr)
         return 2

@@ -79,6 +79,8 @@ Each calendar gets one of Google's calendar colors. Repeating events, time zones
 
 **Calendars** at the bottom of the drop-down lists them, split into yours and shared with you. Tick the ones to show; **Add calendar** adds more.
 
+To give a calendar a different color, click the palette beside it in that list and pick a swatch: Orange, Tangerine, Tomato, Flamingo, Banana, Sage, Basil, Peacock, Blueberry, Lavender, Grape, Graphite or Cocoa. The ring at the end puts back its Google color. From a terminal, `omabar-gcal color` walks you through it, and `omabar-gcal color "Work" orange` sets one directly (a name, the start of a name, or a `#rrggbb` color all work; `default` resets it). Your choices are kept in `~/.config/omabar/calendars.json`, which updates and `omabar-setup` leave alone.
+
 Prefer the Google Calendar API (event colors set in Google, and every calendar at once)? Run `omabar-gcal login` instead. It needs an OAuth client of your own: in [Google Cloud Console](https://console.cloud.google.com/), enable the Google Calendar API, set up the OAuth consent screen (External, add yourself as a test user), create an OAuth client ID of type Desktop app, and paste the path to its downloaded JSON when asked. Both kinds of calendar can be used together.
 
 ### Thunderbird
@@ -129,7 +131,7 @@ Omabar is Omarchy's own bar engine with a different body. `tools/omabar-patch.py
 
 Omarchy's bar changes between releases, so the engine isn't shipped ready-made. `omabar-setup` runs the patch against `$OMARCHY_PATH/shell/plugins/bar` on your machine and writes the result to `engine/`, which `Bar.qml` loads. `engine/` is ignored by git, so `omarchy plugin update` keeps working. If an edit no longer matches your Omarchy's bar, setup says so and uses `prebuilt/`, a copy built from Omarchy 4.5.0.
 
-The menu tile, workspace dots, player, playlist menu, clock, calendar, weather, notification bell and mail button are custom bar modules in `modules/`. `bin/omabar-gcal` reads Google Calendar. `bin/omabar-weather` reads the National Weather Service (`api.weather.gov`) and caches forecasts in `~/.cache/omabar/`. `tools/omabar-elsewhen-patch.py` swaps the world clock's times for split-flap tiles in a clone of `omarchy.elsewhen`, which `omabar-setup` makes for you, so the built-in plugin is never touched. `bin/omabar-spotify` plays playlists through Spotify's MPRIS interface (over `busctl`, so nothing extra needs installing) and lists them through the Spotify Web API. `python3 -m unittest discover -s tests` checks the calendar reader, the weather helper and the Spotify helper.
+The menu tile, workspace dots, player, playlist menu, clock, calendar, weather, notification bell and mail button are custom bar modules in `modules/`. `bin/omabar-gcal` reads Google Calendar. `bin/omabar-weather` reads the National Weather Service (`api.weather.gov`) and caches forecasts in `~/.cache/omabar/`. `tools/omabar-elsewhen-patch.py` swaps the world clock's times for split-flap tiles in a clone of `omarchy.elsewhen`, which `omabar-setup` makes for you, so the built-in plugin is never touched. `bin/omabar-spotify` plays playlists through Spotify's MPRIS interface (over `busctl`, so nothing extra needs installing) and lists them through the Spotify Web API. `python3 -m unittest discover -s tests` checks the calendar reader, calendar colors, the weather helper and the Spotify helper.
 
 `preview/` holds recordings (GIF and MP4) of the workspace and clock animations, rendered from the real module code with stand-ins for the Omarchy shell.
 
