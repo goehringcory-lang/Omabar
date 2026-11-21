@@ -3,6 +3,10 @@
 #
 #   omabar-setup            use Omabar with its layout (backs up shell.json first)
 #   omabar-setup --restore  put back the shell.json from before setup
+#   omabar-setup --uninstall
+#                           remove Omabar completely: put back your old bar,
+#                           delete Omabar's hook, settings, tokens and cache,
+#                           then remove the plugin itself
 #   omabar-setup --rebuild  rebuild the bar after an Omarchy update, layout untouched
 #   omabar-setup --doctor   print what is installed and what the shell logged
 #   omabar-setup --world-clock "City, Region=Zone" ...
@@ -42,12 +46,18 @@ usage() {
   sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
 }
 
+# Omabar's own settings, tokens and cache. --uninstall deletes both.
+OMABAR_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omabar"
+OMABAR_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omabar"
 # The world clock's cities, as `omabar-setup --world-clock` saved them last.
 WORLD_CLOCK_FILE="$HOME/.config/omabar/world-clock.json"
+# The id of the world clock clone setup made, so --uninstall removes only
+# a clone Omabar created and leaves one you made yourself.
+ELSEWHEN_RECORD="$OMABAR_CONFIG_DIR/elsewhen-clone"
 world_clock_override=""
 
 case ${1:-} in
-"" | --restore | --rebuild | --doctor) ;;
+"" | --restore | --uninstall | --rebuild | --doctor) ;;
 --world-clock)
   shift
   (($# > 0)) || fail 'name at least one city: --world-clock "Jonesborough, Tennessee=America/New_York"'
@@ -242,7 +252,7 @@ doctor() {
 }
 
 if [[ ${1:-} == "--restore" ]]; then
-  [[ -f $BACKUP_FILE ]] || fail "no backup at $BACKUP_FILE; for the built-in bar run: omarchy bar reset"
+  [[ -f $BACKUP_FILE ]] || fail "no backup at $BACKUP_FILE; for Omarchy's default bar run: omarchy bar defaults"
   # The backup is used up by restoring it, so the next setup backs up the
   # layout as it is then rather than keeping this one forever.
   mv "$BACKUP_FILE" "$CONFIG_FILE"
@@ -250,6 +260,55 @@ if [[ ${1:-} == "--restore" ]]; then
   omarchy-shell -q shell reloadConfig >/dev/null 2>&1 || true
   omarchy bar background "$(jq -r '.bar.background // "opaque"' "$CONFIG_FILE" 2>/dev/null || echo opaque)" >/dev/null 2>&1 || true
   echo "Restored your bar to how it was before Omabar"
+  exit 0
+fi
+
+if [[ ${1:-} == "--uninstall" ]]; then
+  # 1. The world clock. A clone setup made is removed the way Omarchy removes
+  #    any plugin, which also puts the built-in world clock back in its place.
+  #    A clone you made yourself is kept and only loses Omabar's flap tiles.
+  created=$(cat "$ELSEWHEN_RECORD" 2>/dev/null || true)
+  for manifest in "$PLUGINS_DIR"/*/manifest.json; do
+    [[ -f $manifest ]] || continue
+    clone_id=$(jq -er 'select(.omarchy.clonedFrom? == "omarchy.elsewhen") | .id' "$manifest" 2>/dev/null) || continue
+    clone_dir=$(dirname "$manifest")
+    if [[ -n $created && $clone_id == "$created" ]]; then
+      if omarchy plugin remove "$clone_id" --yes >/dev/null 2>&1; then
+        # A clone isn't a git checkout, so Omarchy keeps a backup of it; this
+        # one was Omabar's, so nothing is lost by dropping it.
+        rm -rf "$PLUGINS_DIR/.$clone_id.bak."*
+        echo "Removed the world clock copy Omabar made ($clone_id)"
+      else
+        echo "omabar-setup: couldn't remove $clone_id; remove it with: omarchy plugin remove $clone_id" >&2
+      fi
+    elif [[ -f $PLUGIN_DIR/tools/omabar-elsewhen-patch.py ]]; then
+      python3 "$PLUGIN_DIR/tools/omabar-elsewhen-patch.py" --undo "$clone_dir" || true
+    fi
+  done
+
+  # 2. The bar: your layout from before setup, or Omarchy's default bar when
+  #    there's no backup and shell.json still points at Omabar.
+  if [[ -f $BACKUP_FILE ]]; then
+    mv "$BACKUP_FILE" "$CONFIG_FILE"
+    omarchy-shell -q shell reloadConfig >/dev/null 2>&1 || true
+    omarchy bar background "$(jq -r '.bar.background // "opaque"' "$CONFIG_FILE" 2>/dev/null || echo opaque)" >/dev/null 2>&1 || true
+    echo "Restored your bar to how it was before Omabar"
+  elif omabar_selected || grep -q "$PLUGIN_ID" "$CONFIG_FILE" 2>/dev/null; then
+    omarchy bar defaults >/dev/null 2>&1 || true
+    omarchy bar reset >/dev/null 2>&1 || true
+    echo "Put back Omarchy's default bar"
+  fi
+
+  # 3. Everything else Omabar wrote: the update hook, its settings (Spotify
+  #    login, calendar addresses, world clock cities) and its cache.
+  rm -f "$HOOK_FILE"
+  rm -rf "$OMABAR_CONFIG_DIR" "$OMABAR_CACHE_DIR"
+  echo "Deleted Omabar's update hook, settings and cache"
+
+  # 4. The plugin itself. exec, because this script lives inside it.
+  if [[ -d $PLUGIN_DIR ]]; then
+    exec omarchy plugin remove "$PLUGIN_ID" --yes
+  fi
   exit 0
 fi
 
@@ -337,6 +396,7 @@ elsewhen_id=$(elsewhen_clone || echo "omarchy.elsewhen")
 if [[ $elsewhen_id == "omarchy.elsewhen" ]]; then
   omarchy plugin clone omarchy.elsewhen >/dev/null 2>&1 || true
   elsewhen_id=$(elsewhen_clone || echo "omarchy.elsewhen")
+  [[ $elsewhen_id == "omarchy.elsewhen" ]] || echo "$elsewhen_id" >"$ELSEWHEN_RECORD"
   pick_source
 fi
 if [[ $elsewhen_id != "omarchy.elsewhen" && -d $PLUGINS_DIR/$elsewhen_id ]]; then
@@ -478,10 +538,27 @@ fi
 mkdir -p "$(dirname "$HOOK_FILE")"
 cat >"$HOOK_FILE" <<HOOK
 #!/bin/bash
-# Installed by omabar-setup; removed by omabar-setup --restore.
+# Installed by omabar-setup; removed by omabar-setup --restore or --uninstall.
 # Rebuilds Omabar's bar when an Omarchy update has changed the shell's.
 setup="\$HOME/.config/omarchy/plugins/$PLUGIN_ID/bin/omabar-setup"
-[[ -x \$setup ]] && "\$setup" --rebuild
+if [[ -x \$setup ]]; then
+  "\$setup" --rebuild
+  exit 0
+fi
+# Omabar was removed without --uninstall. If the bar still points at it, put
+# back the layout from before Omabar (or Omarchy's default bar), then remove
+# this hook.
+config="\$HOME/.config/omarchy/shell.json"
+backup="\$config.before-omabar"
+if grep -q "$PLUGIN_ID" "\$config" 2>/dev/null; then
+  if [[ -f \$backup ]]; then
+    mv "\$backup" "\$config"
+    omarchy-shell -q shell reloadConfig >/dev/null 2>&1 || true
+  else
+    omarchy bar defaults >/dev/null 2>&1 || true
+  fi
+fi
+rm -f "\$0"
 exit 0
 HOOK
 
