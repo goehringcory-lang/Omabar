@@ -18,6 +18,7 @@ Item {
   property string location: ""
   property string unit: "F"
   property string updatedText: ""
+  property string radarUrl: ""
   property var current: null
   property var days: []
   property var alerts: []
@@ -25,6 +26,7 @@ Item {
   property int expandedIndex: -1
 
   signal refreshRequested()
+  signal radarRequested()
 
   function reset() {
     card.expandedIndex = -1
@@ -577,6 +579,20 @@ Item {
       opacity: 0.5
       font.family: card.fontName
       font.pixelSize: Style.font.caption
+    }
+
+    // ── footer ───────────────────────────────────────────────────────────
+    Item {
+      visible: card.radarUrl !== ""
+      width: parent.width
+      height: Style.space(26)
+
+      Chip {
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+        label: "\u{F0437}  Radar"
+        onPicked: card.radarRequested()
+      }
     }
   }
 

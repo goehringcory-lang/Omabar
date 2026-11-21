@@ -4,11 +4,12 @@
 // right-click refreshes the forecast.
 //
 // Settings (inline on the shell.json entry):
-//   url   - a forecast.weather.gov/MapClick.php?lat=...&lon=... link
-//   lat   - latitude when url is not set (default 37.67552934366611)
-//   lon   - longitude when url is not set (default -119.78244423866272)
-//   days  - number of forecast days to show, 1..7 (default 5)
-//   units - "F" or "C" (default "F")
+//   url      - a forecast.weather.gov/MapClick.php?lat=...&lon=... link
+//   lat      - latitude when url is not set (default 37.67552934366611)
+//   lon      - longitude when url is not set (default -119.78244423866272)
+//   days     - number of forecast days to show, 1..7 (default 5)
+//   units    - "F" or "C" (default "F")
+//   radarUrl - radar link to open (defaults to the location's weather.gov radar)
 import QtQuick
 import Quickshell
 import Quickshell.Io
@@ -33,6 +34,8 @@ Item {
   readonly property real lon: Number(setting("lon", -119.78244423866272))
   readonly property int daysCount: Math.max(1, Math.min(7, Number(setting("days", 5)) || 5))
   readonly property string units: String(setting("units", "F")).toUpperCase() === "C" ? "C" : "F"
+  readonly property string defaultRadarUrl: "https://radar.weather.gov/station/khnx/standard"
+  readonly property string configuredRadarUrl: String(setting("radarUrl", "")).trim()
 
   readonly property bool vertical: bar ? bar.vertical : false
   readonly property int barSize: bar ? bar.barSize : 34
@@ -48,6 +51,8 @@ Item {
   property string location: ""
   property string unit: units
   property string updatedText: ""
+  property string fetchedRadarUrl: ""
+  readonly property string radarUrl: configuredRadarUrl !== "" ? configuredRadarUrl : (fetchedRadarUrl !== "" ? fetchedRadarUrl : defaultRadarUrl)
   property var current: null
   property var daysData: []
   property var alerts: []
@@ -57,6 +62,12 @@ Item {
   // Called by the bar when another popup opens or a click lands outside.
   function close() {
     forecastOpen = false
+  }
+
+  function openRadar() {
+    if (!root.radarUrl) return
+    if (root.bar) root.bar.run("xdg-open " + Util.shellQuote(root.radarUrl))
+    root.forecastOpen = false
   }
 
   function helperArgs(force) {
@@ -104,6 +115,7 @@ Item {
         root.daysData = Array.isArray(data.days) ? data.days : []
         root.alerts = Array.isArray(data.alerts) ? data.alerts : []
         root.updatedText = root.formatUpdated(data.updated)
+        root.fetchedRadarUrl = String(data.radarUrl || "").trim()
         root.lastLoadedMs = Date.now()
       }
     }
@@ -141,7 +153,10 @@ Item {
     onTriggered: root.load(false)
   }
 
-  onSettingsChanged: if (ready) load(false)
+  onSettingsChanged: if (ready) {
+    fetchedRadarUrl = ""
+    load(false)
+  }
 
   onForecastOpenChanged: {
     syncTooltip()
@@ -263,10 +278,12 @@ Item {
       location: root.location
       unit: root.unit
       updatedText: root.updatedText
+      radarUrl: root.radarUrl
       current: root.current
       days: root.daysData
       alerts: root.alerts
       onRefreshRequested: root.load(true)
+      onRadarRequested: root.openRadar()
     }
   }
 

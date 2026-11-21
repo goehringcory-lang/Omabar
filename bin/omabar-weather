@@ -259,11 +259,18 @@ def api_get(url):
     raise last_error
 
 
+def radar_url_for_station(station):
+    code = str(station or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9]{3,6}", code):
+        return f"https://radar.weather.gov/station/{code.lower()}/standard"
+    return ""
+
+
 def fetch_point(lat, lon, force=False):
     cache_name = f"weather-point-{lat:.4f}_{lon:.4f}.json"
     if not force:
         cached = read_cache(cache_name, POINT_CACHE_SECONDS)
-        if isinstance(cached, dict) and cached.get("forecast"):
+        if isinstance(cached, dict) and cached.get("forecast") and "radarStation" in cached:
             return cached
     data = api_get(f"https://api.weather.gov/points/{lat:.4f},{lon:.4f}")
     props = data.get("properties") if isinstance(data, dict) else None
@@ -277,6 +284,7 @@ def fetch_point(lat, lon, force=False):
         "location": location,
         "forecast": str(props["forecast"]),
         "hourly": str(props.get("forecastHourly") or ""),
+        "radarStation": str(props.get("radarStation") or "").strip(),
     }
     write_cache(cache_name, point)
     return point
@@ -443,7 +451,7 @@ def fetch_forecast(lat, lon, days_count=DEFAULT_DAYS, units=DEFAULT_UNITS, force
 
     if not force:
         cached = read_cache(cache_name, FORECAST_CACHE_SECONDS)
-        if isinstance(cached, dict) and cached.get("ok"):
+        if isinstance(cached, dict) and cached.get("ok") and "radarUrl" in cached:
             return cached
 
     try:
@@ -485,6 +493,7 @@ def fetch_forecast(lat, lon, days_count=DEFAULT_DAYS, units=DEFAULT_UNITS, force
             "lon": lon,
             "unit": units,
             "updated": timestamp,
+            "radarUrl": radar_url_for_station(point.get("radarStation")),
             "current": current,
             "days": days,
             "alerts": alerts,
@@ -517,6 +526,7 @@ def fetch_forecast(lat, lon, days_count=DEFAULT_DAYS, units=DEFAULT_UNITS, force
             "lon": lon,
             "unit": units,
             "updated": "",
+            "radarUrl": "",
             "current": None,
             "days": [],
             "alerts": [],
@@ -545,6 +555,7 @@ def main(argv=None):
             "lon": None,
             "unit": "C" if str(args.units).upper() == "C" else "F",
             "updated": "",
+            "radarUrl": "",
             "current": None,
             "days": [],
             "alerts": [],
