@@ -25,9 +25,15 @@ PATCHES = [
   // ── Omabar ─────────────────────────────────────────────────────────────
   // The bar floats as a glass pill. omabarGap is the space between the pill and
   // the screen edge it hangs from; omabarInset is its distance from the two
-  // side edges. Toasts, panels and tiled windows clear both (screenBarSizes).
-  readonly property int omabarGap: Style.space(7)
-  readonly property int omabarInset: Style.space(12)
+  // side edges, lined up with the outer edge of tiled windows (Hyprland's
+  // gaps_out, which Style.gapsOut holds half of). Toasts and panels clear the
+  // pill (screenBarSizes). Tiled windows add Hyprland's gaps_out below the
+  // reserved zone, so omabarTuck hands half of that back and the pill sits
+  // snug above the windows. It is never more than gaps_out, so windows can't
+  // slide under the pill, even with window gaps toggled off.
+  readonly property int omabarGap: Style.space(3)
+  readonly property int omabarInset: Math.max(Style.space(4), Style.gapsOut * 2)
+  readonly property int omabarTuck: Style.gapsOut
   // Light themes get a whiter sheen, dark themes a quieter one.
   readonly property bool omabarLightTheme: (0.2126 * background.r + 0.7152 * background.g + 0.0722 * background.b) > 0.55
 """,
@@ -40,7 +46,7 @@ PATCHES = [
     (
         "reserve room for the gap",
         "    exclusiveZone: thickness\n",
-        "    exclusiveZone: thickness + root.omabarGap\n",
+        "    exclusiveZone: thickness + root.omabarGap - root.omabarTuck\n",
     ),
     (
         "float the strip off the edge",
