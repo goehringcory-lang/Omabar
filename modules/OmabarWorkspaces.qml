@@ -4,8 +4,10 @@
 //
 // Switching workspaces pulls a glossy drop of water out of the old pill: a
 // liquid neck stretches and pinches off, the teardrop glides along the row
-// shedding fine wake beads, and impact throws a directional splash crown,
-// arcing droplets, dual ripples and a damped liquid slosh into the new pill.
+// shedding droplets, and impact throws a directional splash crown, arcing
+// droplets, concentric ripples and a damped liquid slosh into the new pill.
+// Longer jumps across multiple workspaces build more momentum for a larger
+// splash, extra crown jets, a secondary droplet burst and deeper slosh.
 // All liquid shades derive from the active theme's accent color; Omarchy's
 // "reduce motion" setting turns the motion off.
 import QtQuick
@@ -172,6 +174,8 @@ Item {
   property bool flightActive: false
   property int flightFrom: -1
   property int flightTo: -1
+  property int flightHops: 1
+  property real flightDrama: 0
   property point flightStart: Qt.point(0, 0)
   property point flightLastEnd: Qt.point(0, 0)
   property real flightElapsed: 0
@@ -187,6 +191,7 @@ Item {
   property var _particles: []
   property var _ripples: []
   property var _crowns: []
+  property var _pendingBursts: []
 
   onCurrentIdChanged: launch(currentId)
   Component.onCompleted: landedId = currentId
@@ -197,6 +202,15 @@ Item {
   function smoothstep(e0, e1, x) {
     var t = clamp((x - e0) / (e1 - e0), 0, 1)
     return t * t * (3 - 2 * t)
+  }
+
+  // Extra splash intensity for multi-workspace jumps:
+  // 1 hop -> 0.0, 2 hops (e.g. 1->3, 5->3) -> 0.48, 3 hops -> 0.80,
+  // 4 hops (e.g. 1->5) -> 1.08, 5+ hops -> smoothly capped at 1.35.
+  function dramaForHops(hops) {
+    var extra = Math.max(0, hops - 1)
+    if (extra <= 0) return 0
+    return Math.min(1.35, 0.48 * Math.pow(extra, 0.74))
   }
 
   function rgba(c, a) {
@@ -210,7 +224,8 @@ Item {
   }
 
   function updateFxActive() {
-    var active = root.flightActive || root._particles.length > 0 || root._ripples.length > 0 || root._crowns.length > 0
+    var active = root.flightActive || root._particles.length > 0 || root._ripples.length > 0
+      || root._crowns.length > 0 || root._pendingBursts.length > 0
     if (root.fxActive !== active) root.fxActive = active
   }
 
@@ -218,9 +233,12 @@ Item {
     root.flightActive = false
     root.flightFrom = -1
     root.flightTo = -1
+    root.flightHops = 1
+    root.flightDrama = 0
     root._particles = []
     root._ripples = []
     root._crowns = []
+    root._pendingBursts = []
     root.landedId = root.currentId
     root.fxActive = false
   }
@@ -243,16 +261,23 @@ Item {
         return
       }
       var dist = Math.hypot(end.x - root.dropX, end.y - root.dropY)
+      var stepSpan = Math.max(1, root.dot + root.gap)
+      var newDir = root.vertical
+        ? (end.y >= root.dropY ? 1 : -1)
+        : (end.x >= root.dropX ? 1 : -1)
+      var estHops = Math.max(1, Math.round(dist / stepSpan))
+      if (newDir === root.dropDir) estHops = Math.max(estHops, root.flightHops + 1)
+      var redirectDrama = root.dramaForHops(estHops)
       root.flightFrom = -1
       root.flightTo = target
+      root.flightHops = estHops
+      root.flightDrama = redirectDrama
       root.flightStart = Qt.point(root.dropX, root.dropY)
       root.flightLastEnd = end
       root.flightElapsed = 0
-      root.flightDuration = root.clamp(0.14 + dist / Math.max(1, root.dot * 28), 0.15, 0.30)
-      root.flightMomentum = root.clamp(0.92 + dist / Math.max(1, root.dot * 16), 0.92, 1.42)
-      root.dropDir = root.vertical
-        ? (end.y >= root.dropY ? 1 : -1)
-        : (end.x >= root.dropX ? 1 : -1)
+      root.flightDuration = root.clamp(0.135 + dist / Math.max(1, root.dot * 28), 0.14, 0.30)
+      root.flightMomentum = 1.0 + redirectDrama * 0.65
+      root.dropDir = newDir
       root.dropU = 0
       root.neckPinched = true
       root.wakeTimer = 0
@@ -269,13 +294,16 @@ Item {
     }
 
     var hops = Math.max(1, Math.abs(root.ids.indexOf(target) - root.ids.indexOf(from)))
+    var drama = root.dramaForHops(hops)
     root.flightFrom = from
     root.flightTo = target
+    root.flightHops = hops
+    root.flightDrama = drama
     root.flightStart = start
     root.flightLastEnd = end
     root.flightElapsed = 0
-    root.flightDuration = Math.min(0.32, 0.175 + hops * 0.028)
-    root.flightMomentum = Math.min(1.42, 0.88 + hops * 0.15)
+    root.flightDuration = Math.min(0.31, 0.17 + hops * 0.026)
+    root.flightMomentum = 1.0 + drama * 0.65
     root.dropX = start.x
     root.dropY = start.y
     root.dropDir = root.vertical
@@ -291,28 +319,97 @@ Item {
     liquidCanvas.requestPaint()
   }
 
-  function spawnWakeBead(x, y, dir, scale) {
-    var cross = (Math.random() - 0.5) * root.dot * 0.36
-    var driftBack = -dir * (root.dot * (1.2 + Math.random() * 1.4))
-    var crossVel = (Math.random() - 0.5) * root.dot * 1.1
+  function spawnWakeBead(x, y, dir, scale, drama) {
+    var d = drama || 0
+    var side = Math.random() < 0.5 ? -1 : 1
+    var cross = side * root.dot * (0.24 + Math.random() * 0.28)
+    var driftBack = -dir * root.dot * (2.4 + Math.random() * 2.6 + d * 2.2)
+    var crossVel = side * root.dot * (1.8 + Math.random() * 2.4 + d * 3.4)
+    var alongOff = -dir * root.dot * (0.45 + Math.random() * 0.35)
     root._particles.push({
-      x: root.vertical ? x + cross : x - dir * root.dot * 0.65,
-      y: root.vertical ? y - dir * root.dot * 0.65 : y + cross,
+      x: root.vertical ? x + cross : x + alongOff,
+      y: root.vertical ? y + alongOff : y + cross,
       vx: root.vertical ? crossVel : driftBack,
-      vy: root.vertical ? driftBack : crossVel + 4,
-      g: root.vertical ? 0 : 28,
-      drag: 2.2,
-      r: root.dot * (0.14 + Math.random() * 0.11) * scale,
+      vy: root.vertical ? driftBack : crossVel,
+      gx: 0,
+      gy: root.vertical ? root.dot * 6 : root.dot * 16,
+      drag: 2.3,
+      r: root.dot * (0.17 + Math.random() * 0.14 + d * 0.04) * scale,
       age: 0,
-      life: 0.28 + Math.random() * 0.16,
-      alpha: 0.85
+      life: 0.28 + Math.random() * 0.16 + d * 0.06,
+      alpha: 0.90
     })
+  }
+
+  function spawnSplashDroplet(atX, atY, dir, angleRad, speed, r, life, drag, gScale) {
+    var cosA = Math.cos(angleRad)
+    var sinA = Math.sin(angleRad)
+    var along = cosA * speed * dir
+    var across = sinA * speed
+    var rimAlong = cosA * dir * root.dot * 0.55
+    var rimAcross = sinA * root.dot * 0.45
+    root._particles.push({
+      x: atX + (root.vertical ? rimAcross : rimAlong),
+      y: atY + (root.vertical ? rimAlong : rimAcross),
+      vx: root.vertical ? across : along,
+      vy: root.vertical ? along : across,
+      gx: 0,
+      gy: root.vertical ? root.dot * 12 : root.dot * gScale,
+      drag: drag,
+      r: r,
+      age: 0,
+      life: life,
+      alpha: 0.96
+    })
+  }
+
+  // Secondary spray pinching off the rising splash-crown tips on multi-hop jumps.
+  function spawnSecondarySplash(burst) {
+    var atX = burst.x
+    var atY = burst.y
+    var dir = burst.dir
+    var drama = burst.drama
+    var spdMul = 1.0 + drama * 0.42
+    var count = burst.count
+    for (var i = 0; i < count; i++) {
+      var u = count > 1 ? i / (count - 1) : 0.5
+      var mode = i % 3
+      var deg, spd, r, life, drag, gScale
+      if (mode === 0) {
+        // High forward-upper arc breaking off the main crown crest.
+        deg = -(24 + u * 54 + (Math.random() - 0.5) * 10)
+        spd = root.dot * (8.6 + Math.random() * 4.8) * spdMul
+        r = root.dot * (0.16 + Math.random() * 0.14 + drama * 0.03)
+        life = 0.34 + Math.random() * 0.15 + drama * 0.04
+        drag = 2.35
+        gScale = 30
+      } else if (mode === 1) {
+        // Forward-lower secondary droplet.
+        deg = 22 + u * 44 + (Math.random() - 0.5) * 9
+        spd = root.dot * (6.8 + Math.random() * 3.8) * spdMul
+        r = root.dot * (0.15 + Math.random() * 0.12 + drama * 0.02)
+        life = 0.30 + Math.random() * 0.14
+        drag = 2.75
+        gScale = 8
+      } else {
+        // Rear crown-tip droplet kicking back opposite the jump direction.
+        var rearSign = (i % 2 === 0) ? -1 : 1
+        deg = rearSign * (112 + Math.random() * 38)
+        spd = root.dot * (6.4 + Math.random() * 3.6) * spdMul
+        r = root.dot * (0.14 + Math.random() * 0.12)
+        life = 0.28 + Math.random() * 0.14
+        drag = 2.55
+        gScale = rearSign < 0 ? 26 : 8
+      }
+      root.spawnSplashDroplet(atX, atY, dir, deg * Math.PI / 180, spd, r, life, drag, gScale)
+    }
   }
 
   function land() {
     var targetId = root.flightTo
     var dir = root.dropDir
     var mom = root.flightMomentum
+    var drama = root.flightDrama
     root.flightActive = false
     root.flightFrom = -1
     root.landedId = targetId
@@ -320,7 +417,7 @@ Item {
     var index = root.ids.indexOf(targetId)
     var item = index >= 0 ? cells.itemAt(index) : null
     var at = root.centerOf(targetId) || root.flightLastEnd
-    if (item) item.splash(dir)
+    if (item) item.splash(dir, drama)
     if (!at) {
       root.updateFxActive()
       return
@@ -332,66 +429,104 @@ Item {
       y: at.y,
       dir: dir,
       momentum: mom,
+      drama: drama,
       age: 0,
-      life: 0.23
+      life: 0.23 + drama * 0.09
     })
 
-    // 2. Dual concentric ripples (primary crisp wave + delayed soft echo),
-    // bounded cleanly inside the bar's cross-axis thickness.
-    var maxCross = Math.max(root.dot * 0.9, root.barSize * 0.5 - 2.2)
+    // 2. Concentric ripples (primary crisp wave + echo, plus a 3rd wide shockwave
+    // on big multi-space jumps), bounded cleanly inside the bar thickness.
+    var maxCross = Math.max(root.dot * 0.9, root.barSize * 0.5 - 2.0)
     root._ripples.push({
       x: at.x, y: at.y,
-      age: 0, delay: 0, life: 0.35,
+      age: 0, delay: 0, life: 0.35 + drama * 0.06,
       rAxis0: root.dot * 0.72, rCross0: root.dot * 0.52,
-      rAxis1: root.dot * (2.45 + 0.25 * mom),
-      rCross1: Math.min(maxCross, root.dot * 1.52),
-      lineWidth: 1.75, alpha: 0.78, bright: true
+      rAxis1: root.dot * (2.55 + 0.55 * mom),
+      rCross1: Math.min(maxCross, root.dot * (1.58 + drama * 0.28)),
+      lineWidth: 1.85 + drama * 0.45, alpha: Math.min(0.92, 0.80 + drama * 0.10), bright: true
     })
     root._ripples.push({
       x: at.x, y: at.y,
-      age: 0, delay: 0.065, life: 0.43,
+      age: 0, delay: 0.06, life: 0.43 + drama * 0.08,
       rAxis0: root.dot * 0.62, rCross0: root.dot * 0.46,
-      rAxis1: root.dot * (3.0 + 0.3 * mom),
-      rCross1: Math.min(maxCross + 0.4, root.dot * 1.82),
-      lineWidth: 1.2, alpha: 0.48, bright: false
+      rAxis1: root.dot * (3.15 + 0.70 * mom),
+      rCross1: Math.min(maxCross + 0.4, root.dot * (1.88 + drama * 0.32)),
+      lineWidth: 1.25 + drama * 0.25, alpha: Math.min(0.66, 0.50 + drama * 0.12), bright: false
     })
-
-    // 3. Expressive directional spray droplets with ballistic gravity.
-    // Forward-upper fan (5 beads), forward-lower fan (3 beads), rear mist (2 beads).
-    function addSplashBead(angleRad, speed, r, life, gravity) {
-      var along = Math.cos(angleRad) * speed * dir
-      var across = Math.sin(angleRad) * speed
-      root._particles.push({
-        x: at.x + (root.vertical ? across : along) * 0.015,
-        y: at.y + (root.vertical ? along : across) * 0.015,
-        vx: root.vertical ? across : along,
-        vy: root.vertical ? along : across,
-        g: root.vertical ? 0 : gravity,
-        drag: 1.35,
-        r: r,
-        age: 0,
-        life: life,
-        alpha: 0.94
+    if (drama >= 0.70) {
+      root._ripples.push({
+        x: at.x, y: at.y,
+        age: 0, delay: 0.125, life: 0.48,
+        rAxis0: root.dot * 0.75, rCross0: root.dot * 0.50,
+        rAxis1: root.dot * (3.75 + 0.85 * mom),
+        rCross1: Math.min(maxCross + 0.5, root.dot * 2.15),
+        lineWidth: 1.0, alpha: 0.38, bright: false
       })
     }
 
-    for (var i = 0; i < 5; i++) {
-      var upDeg = 18 + i * 14.5 + (Math.random() - 0.5) * 7
-      var upSpd = root.dot * (3.5 + Math.random() * 2.5) * mom
-      var upR = root.dot * (0.16 + Math.random() * 0.16)
-      addSplashBead(-upDeg * Math.PI / 180, upSpd, upR, 0.29 + Math.random() * 0.14, 128)
+    // 3. Expressive directional splash droplets that visibly clear the pill and
+    // arc through the bar, scaling dramatically in count, size and speed for
+    // multi-workspace jumps (1->3, 5->3, 1->5, etc.).
+    var spdMul = 1.0 + drama * 0.40
+    var upCount = 5 + Math.round(drama * 6.5)
+    var dnCount = 3 + Math.round(drama * 4.5)
+    var backCount = 2 + Math.round(drama * 4.2)
+    var mistCount = 2 + Math.round(drama * 4.5)
+
+    // Forward-upper hero spray fan.
+    for (var i = 0; i < upCount; i++) {
+      var uf = upCount > 1 ? i / (upCount - 1) : 0.5
+      var upDeg = 16 + uf * 62 + (Math.random() - 0.5) * 9
+      var upSpd = root.dot * (8.8 + Math.random() * 5.2) * spdMul
+      var upR = root.dot * (0.20 + Math.random() * 0.17 + drama * 0.045)
+      var upLife = 0.36 + Math.random() * 0.16 + drama * 0.05
+      root.spawnSplashDroplet(at.x, at.y, dir, -upDeg * Math.PI / 180, upSpd, upR, upLife, 2.25, 30)
     }
-    for (var j = 0; j < 3; j++) {
-      var dnDeg = 18 + j * 16 + (Math.random() - 0.5) * 6
-      var dnSpd = root.dot * (2.6 + Math.random() * 1.8) * mom
-      var dnR = root.dot * (0.14 + Math.random() * 0.13)
-      addSplashBead(dnDeg * Math.PI / 180, dnSpd, dnR, 0.25 + Math.random() * 0.12, 34)
+
+    // Forward-lower spray fan.
+    for (var j = 0; j < dnCount; j++) {
+      var df = dnCount > 1 ? j / (dnCount - 1) : 0.5
+      var dnDeg = 18 + df * 52 + (Math.random() - 0.5) * 8
+      var dnSpd = root.dot * (7.0 + Math.random() * 4.2) * spdMul
+      var dnR = root.dot * (0.18 + Math.random() * 0.14 + drama * 0.035)
+      var dnLife = 0.31 + Math.random() * 0.14 + drama * 0.04
+      root.spawnSplashDroplet(at.x, at.y, dir, dnDeg * Math.PI / 180, dnSpd, dnR, dnLife, 2.75, 8)
     }
-    for (var m = 0; m < 2; m++) {
-      var backDeg = 116 + m * 24 + (Math.random() - 0.5) * 10
-      var backSpd = root.dot * (2.1 + Math.random() * 1.2) * mom
-      var backR = root.dot * (0.13 + Math.random() * 0.09)
-      addSplashBead(-backDeg * Math.PI / 180, backSpd, backR, 0.23 + Math.random() * 0.10, 96)
+
+    // Rear / back-splash crater droplets (both upper and, for multi-hop, lower).
+    for (var m = 0; m < backCount; m++) {
+      var bf = backCount > 1 ? m / (backCount - 1) : 0.5
+      var backLower = drama >= 0.40 && (m % 3 === 2)
+      var backDeg = 108 + bf * 48 + (Math.random() - 0.5) * 10
+      var backSpd = root.dot * (6.2 + Math.random() * 3.8) * spdMul
+      var backR = root.dot * (0.16 + Math.random() * 0.13 + drama * 0.03)
+      var backLife = 0.30 + Math.random() * 0.14 + drama * 0.04
+      var backAngle = (backLower ? backDeg : -backDeg) * Math.PI / 180
+      root.spawnSplashDroplet(at.x, at.y, dir, backAngle, backSpd, backR, backLife, backLower ? 2.8 : 2.35, backLower ? 8 : 28)
+    }
+
+    // Fine high-speed sparkling spray mist.
+    for (var s = 0; s < mistCount; s++) {
+      var mistSign = (s % 3 === 1) ? 1 : -1
+      var mistRear = s % 4 === 3
+      var mistDeg = mistRear ? (116 + Math.random() * 42) : (12 + Math.random() * 68)
+      var mistSpd = root.dot * (11.2 + Math.random() * 6.0) * spdMul
+      var mistR = root.dot * (0.12 + Math.random() * 0.08)
+      var mistLife = 0.27 + Math.random() * 0.14
+      root.spawnSplashDroplet(at.x, at.y, dir, mistSign * mistDeg * Math.PI / 180, mistSpd, mistR, mistLife, 3.1, mistSign < 0 ? 26 : 8)
+    }
+
+    // 4. Multi-workspace secondary crown-tip break-off shower shortly after impact.
+    if (drama > 0.05) {
+      root._pendingBursts.push({
+        x: at.x,
+        y: at.y,
+        dir: dir,
+        drama: drama,
+        count: Math.round(3 + drama * 5.5),
+        delay: 0.042,
+        age: 0
+      })
     }
 
     root.updateFxActive()
@@ -429,44 +564,68 @@ Item {
           : (end.x >= startPt.x ? 1 : -1)
       }
 
-      // Rayleigh-Plateau pinch-off bead right as the takeoff neck snaps.
-      if (!root.neckPinched && root.flightFrom >= 0 && u >= 0.34) {
+      // Rayleigh-Plateau pinch-off droplets right as the takeoff neck snaps.
+      if (!root.neckPinched && root.flightFrom >= 0 && u >= 0.32) {
         root.neckPinched = true
         var pinchX = (startPt.x + root.dropX) * 0.5
         var pinchY = (startPt.y + root.dropY) * 0.5
-        root.spawnWakeBead(pinchX, pinchY, root.dropDir, 0.95)
+        var pinchCount = root.flightHops >= 4 ? 3 : (root.flightHops >= 2 ? 2 : 1)
+        for (var pb = 0; pb < pinchCount; pb++) {
+          root.spawnWakeBead(pinchX, pinchY, root.dropDir, pb === 0 ? 1.05 : 0.82, root.flightDrama)
+        }
       }
 
-      // Shed fine wake droplets along the glide.
+      // Shed droplets off the flying drop; faster multi-space jumps shear off more spray.
       root.wakeTimer += dt
-      if (u > 0.22 && u < 0.86 && root.wakeTimer >= 0.052) {
+      var wakeInterval = Math.max(0.017, 0.046 - root.flightDrama * 0.024)
+      if (u > 0.16 && u < 0.90 && root.wakeTimer >= wakeInterval) {
         root.wakeTimer = 0
-        root.spawnWakeBead(root.dropX, root.dropY, root.dropDir, 0.85)
+        root.spawnWakeBead(root.dropX, root.dropY, root.dropDir, 0.92, root.flightDrama)
+        if (root.flightDrama >= 0.72 && Math.random() < 0.55) {
+          root.spawnWakeBead(root.dropX, root.dropY, root.dropDir, 0.72, root.flightDrama)
+        }
       }
 
       if (u >= 1) root.land()
     }
 
+    // Fire delayed secondary splash bursts for multi-workspace impacts.
+    if (root._pendingBursts.length > 0) {
+      var nextB = []
+      for (var b = 0; b < root._pendingBursts.length; b++) {
+        var burst = root._pendingBursts[b]
+        burst.age += dt
+        if (burst.age >= burst.delay) root.spawnSecondarySplash(burst)
+        else nextB.push(burst)
+      }
+      root._pendingBursts = nextB
+    }
+
     // Advance particles with air drag, gravity, and bar-edge containment.
     var nextP = []
-    var minCross = 2.6
-    var maxCross = Math.max(minCross + 2, root.barSize - 2.6)
+    var crossSize = root.vertical
+      ? (root.width > 0 ? root.width : root.barSize)
+      : (root.height > 0 ? root.height : root.barSize)
+    var minCross = 2.0
+    var maxCross = Math.max(minCross + 2, crossSize - 2.0)
     for (var i = 0; i < root._particles.length; i++) {
       var p = root._particles[i]
       p.age += dt
       if (p.age >= p.life) continue
       var damp = Math.max(0, 1 - p.drag * dt)
-      p.vx *= damp
-      p.vy = p.vy * damp + p.g * dt
+      p.vx = p.vx * damp + p.gx * dt
+      p.vy = p.vy * damp + p.gy * dt
       p.x += p.vx * dt
       p.y += p.vy * dt
-      var rNow = p.r * (1 - 0.55 * (p.age / p.life))
+      var k = p.age / p.life
+      var shrink = Math.max(0, (k - 0.28) / 0.72)
+      var rNow = p.r * (1 - 0.54 * shrink)
       if (root.vertical) {
-        if (p.x < minCross + rNow) { p.x = minCross + rNow; p.vx = Math.abs(p.vx) * 0.25 }
-        else if (p.x > maxCross - rNow) { p.x = maxCross - rNow; p.vx = -Math.abs(p.vx) * 0.25 }
+        if (p.x < minCross + rNow) { p.x = minCross + rNow; p.vx = Math.abs(p.vx) * 0.30 }
+        else if (p.x > maxCross - rNow) { p.x = maxCross - rNow; p.vx = -Math.abs(p.vx) * 0.30 }
       } else {
-        if (p.y < minCross + rNow) { p.y = minCross + rNow; p.vy = Math.abs(p.vy) * 0.25 }
-        else if (p.y > maxCross - rNow) { p.y = maxCross - rNow; p.vy = -Math.abs(p.vy) * 0.25 }
+        if (p.y < minCross + rNow) { p.y = minCross + rNow; p.vy = Math.abs(p.vy) * 0.30 }
+        else if (p.y > maxCross - rNow) { p.y = maxCross - rNow; p.vy = -Math.abs(p.vy) * 0.30 }
       }
       nextP.push(p)
     }
@@ -502,10 +661,10 @@ Item {
 
   Canvas {
     id: liquidCanvas
-    // Extend slightly along the bar axis so splashes on the first/last dot
-    // never clip abruptly; stay strictly within barSize on the cross axis.
-    readonly property int padX: root.vertical ? 0 : Math.round(root.barSize * 0.55)
-    readonly property int padY: root.vertical ? Math.round(root.barSize * 0.55) : 0
+    // Extend generously along the bar axis so dramatic multi-workspace splashes
+    // on the first/last dot never clip; stay strictly within barSize on the cross axis.
+    readonly property int padX: root.vertical ? 0 : Math.round(root.barSize * 1.45)
+    readonly property int padY: root.vertical ? Math.round(root.barSize * 1.45) : 0
     x: -padX
     y: -padY
     width: root.width + padX * 2
@@ -540,18 +699,47 @@ Item {
     function drawSplashCrown(ctx, cr) {
       var k = root.clamp(cr.age / cr.life, 0, 1)
       var grow = Math.sin(Math.min(1, k * 1.55) * Math.PI * 0.5)
-      var fade = Math.pow(1 - k, 1.35)
+      var fade = Math.pow(1 - k, 1.30)
       if (fade <= 0.01) return
 
       var dir = cr.dir
       var mom = cr.momentum
-      var maxCross = root.barSize - 3.0
+      var drama = cr.drama || 0
+      var crossSize = root.vertical
+        ? (root.width > 0 ? root.width : root.barSize)
+        : (root.height > 0 ? root.height : root.barSize)
+      var maxCross = Math.max(4.0, crossSize - 2.4)
+
+      // Brief luminous liquid flash right at the impact point.
+      if (k < 0.45) {
+        var fk = 1 - k / 0.45
+        var flashR = root.dot * (1.05 + 0.85 * grow + drama * 0.42)
+        var flashGrad = ctx.createRadialGradient(cr.x, cr.y, 0, cr.x, cr.y, flashR)
+        flashGrad.addColorStop(0.0, root.rgba(root.accentSpec, (0.45 + drama * 0.25) * fk * fk))
+        flashGrad.addColorStop(0.55, root.rgba(root.accentCaustic, (0.30 + drama * 0.16) * fk * fk))
+        flashGrad.addColorStop(1.0, root.rgba(root.accent, 0))
+        ctx.fillStyle = flashGrad
+        fillEllipse(ctx, cr.x, cr.y, flashR, flashR * 0.85)
+      }
+
       var crests = [
-        { deg: -36, reach: root.dot * 1.48 * mom, thick: 0.95, curve:  0.22 },
-        { deg:  34, reach: root.dot * 1.24 * mom, thick: 0.85, curve: -0.20 },
-        { deg: -68, reach: root.dot * 1.20 * mom, thick: 0.78, curve:  0.16 },
-        { deg: -132, reach: root.dot * 0.78 * mom, thick: 0.60, curve: -0.14 }
+        { deg: -34, reach: root.dot * 1.65 * mom, thick: 1.00, curve:  0.24 },
+        { deg:  32, reach: root.dot * 1.38 * mom, thick: 0.90, curve: -0.22 },
+        { deg: -66, reach: root.dot * 1.42 * mom, thick: 0.84, curve:  0.18 },
+        { deg: -130, reach: root.dot * 0.95 * mom, thick: 0.66, curve: -0.16 }
       ]
+      if (drama >= 0.35) {
+        crests.push(
+          { deg: -16, reach: root.dot * 1.85 * mom, thick: 0.86, curve:  0.18 },
+          { deg: 132, reach: root.dot * 0.92 * mom, thick: 0.62, curve:  0.15 }
+        )
+      }
+      if (drama >= 0.72) {
+        crests.push(
+          { deg: -86, reach: root.dot * 1.48 * mom, thick: 0.76, curve:  0.12 },
+          { deg:  62, reach: root.dot * 1.30 * mom, thick: 0.72, curve: -0.15 }
+        )
+      }
 
       for (var i = 0; i < crests.length; i++) {
         var c = crests[i]
@@ -571,22 +759,22 @@ Item {
         var midY = cr.y + uy * len * 0.52 + ny * len * c.curve * 0.15
 
         if (root.vertical) {
-          tipX = root.clamp(tipX, 3.0, maxCross)
-          midX = root.clamp(midX, 3.0, maxCross)
+          tipX = root.clamp(tipX, 2.4, maxCross)
+          midX = root.clamp(midX, 2.4, maxCross)
         } else {
-          tipY = root.clamp(tipY, 3.0, maxCross)
-          midY = root.clamp(midY, 3.0, maxCross)
+          tipY = root.clamp(tipY, 2.4, maxCross)
+          midY = root.clamp(midY, 2.4, maxCross)
         }
 
-        var bw = root.dot * 0.34 * c.thick * (1 - 0.55 * k)
+        var bw = root.dot * (0.35 + drama * 0.06) * c.thick * (1 - 0.55 * k)
         var mw = bw * 0.42
         var b1x = cr.x + nx * bw, b1y = cr.y + ny * bw
         var b2x = cr.x - nx * bw, b2y = cr.y - ny * bw
 
         var grad = ctx.createLinearGradient(cr.x, cr.y, tipX, tipY)
-        grad.addColorStop(0.0, root.rgba(root.accent, 0.85 * fade))
-        grad.addColorStop(0.7, root.rgba(root.accentCaustic, 0.92 * fade))
-        grad.addColorStop(1.0, root.rgba(root.accentSpec, 0.88 * fade))
+        grad.addColorStop(0.0, root.rgba(root.accent, 0.88 * fade))
+        grad.addColorStop(0.68, root.rgba(root.accentCaustic, 0.94 * fade))
+        grad.addColorStop(1.0, root.rgba(root.accentSpec, 0.92 * fade))
 
         ctx.beginPath()
         ctx.moveTo(b1x, b1y)
@@ -595,21 +783,30 @@ Item {
         ctx.closePath()
         ctx.fillStyle = grad
         ctx.fill()
+
+        // Surface-tension droplet bulb beading at each rising crown tip.
+        if (k < 0.72) {
+          var bulbR = Math.max(0.75, bw * 0.46 * (1 - 0.35 * k))
+          ctx.fillStyle = root.rgba(root.accentCaustic, 0.90 * fade)
+          fillEllipse(ctx, tipX, tipY, bulbR, bulbR)
+          ctx.fillStyle = root.rgba(root.accentSpec, 0.85 * fade)
+          fillEllipse(ctx, tipX - bulbR * 0.22, tipY - bulbR * 0.25, bulbR * 0.42, bulbR * 0.34)
+        }
       }
     }
 
     function drawDrop(ctx) {
       var u = root.dropU
       var dir = root.dropDir
-      var mom = root.flightMomentum
+      var drama = root.flightDrama
       var R = root.dot * 0.68
-      var spd = Math.min(1.4, root.dropSpeed / 1.15) * mom
+      var spd = Math.min(1.85, (root.dropSpeed / 1.15) * (0.95 + drama * 0.32))
       var wobble = Math.sin(u * Math.PI * 3.5) * 0.075 * (1 - u * 0.4)
       var tailGrow = root.smoothstep(0.10, 0.48, u)
 
-      var nose = R * (1.08 + 0.34 * spd + wobble)
-      var tail = R * (0.95 + (0.45 + 1.05 * spd) * tailGrow - wobble * 0.6)
-      var ry = R * (1.02 - 0.16 * spd - wobble * 0.65)
+      var nose = R * (1.08 + 0.32 * spd + wobble)
+      var tail = R * (0.95 + (0.45 + 0.98 * spd) * tailGrow - wobble * 0.6)
+      var ry = R * Math.max(0.68, 1.02 - 0.14 * spd - wobble * 0.65)
 
       // 1. Concave metaball liquid neck stretching out of the old workspace.
       if (root.flightFrom >= 0 && u < 0.38) {
@@ -671,8 +868,8 @@ Item {
       }
 
       // Soft outer wet glow.
-      traceTeardrop(1.22)
-      ctx.fillStyle = root.rgba(root.accent, 0.22)
+      traceTeardrop(1.22 + drama * 0.06)
+      ctx.fillStyle = root.rgba(root.accent, Math.min(0.32, 0.22 + drama * 0.07))
       ctx.fill()
 
       // Main liquid body gradient (deeper rim -> vivid accent -> luminous lower caustic).
@@ -708,27 +905,43 @@ Item {
       for (var i = 0; i < root._particles.length; i++) {
         var p = root._particles[i]
         var k = root.clamp(p.age / p.life, 0, 1)
-        var r = p.r * (1 - 0.55 * k)
-        if (r <= 0.25) continue
-        var alpha = p.alpha * (1 - k * k)
+        var shrink = Math.max(0, (k - 0.28) / 0.72)
+        var r = p.r * (1 - 0.54 * shrink)
+        if (r <= 0.3) continue
+        var alpha = p.alpha * (1 - Math.pow(k, 2.3))
 
         var spd = Math.hypot(p.vx, p.vy)
-        var stretch = 1 + Math.min(0.48, spd / Math.max(1, root.dot * 12))
+        var stretch = 1 + Math.min(0.72, spd / Math.max(1, root.dot * 16))
+        var rx = r * stretch
+        var ry = r / Math.sqrt(stretch)
 
         ctx.save()
         ctx.translate(p.x, p.y)
         if (spd > 6) ctx.rotate(Math.atan2(p.vy, p.vx))
 
+        // Subtle wet halo around larger droplets so they read cleanly on dark & light themes.
+        if (r > 1.15) {
+          ctx.fillStyle = root.rgba(root.accent, alpha * 0.24)
+          fillEllipse(ctx, 0, 0, rx * 1.32, ry * 1.32)
+        }
+
         // Glossy droplet body.
         ctx.fillStyle = root.rgba(root.accent, alpha)
-        fillEllipse(ctx, 0, 0, r * stretch, r / Math.sqrt(stretch))
+        fillEllipse(ctx, 0, 0, rx, ry)
 
-        // Bright caustic center + tiny specular glint on larger droplets.
-        if (r > 0.95) {
-          ctx.fillStyle = root.rgba(root.accentCaustic, alpha * 0.55)
-          fillEllipse(ctx, r * 0.12, r * 0.18, r * 0.48, r * 0.32)
-          ctx.fillStyle = root.rgba(root.accentSpec, alpha * 0.82)
-          fillEllipse(ctx, -r * 0.18, -r * 0.30, r * 0.34, r * 0.24)
+        // Subtle depth rim on hero droplets.
+        if (r > 1.35) {
+          ctx.lineWidth = 0.55
+          ctx.strokeStyle = root.rgba(root.accentDeep, alpha * 0.32)
+          strokeEllipse(ctx, 0, 0, rx, ry)
+        }
+
+        // Bright caustic center + crisp specular glint.
+        if (r > 0.85) {
+          ctx.fillStyle = root.rgba(root.accentCaustic, alpha * 0.62)
+          fillEllipse(ctx, rx * 0.14, ry * 0.18, rx * 0.46, ry * 0.34)
+          ctx.fillStyle = root.rgba(root.accentSpec, alpha * 0.90)
+          fillEllipse(ctx, -rx * 0.20, -ry * 0.28, Math.max(0.45, rx * 0.34), Math.max(0.35, ry * 0.26))
         }
         ctx.restore()
       }
@@ -807,6 +1020,7 @@ Item {
         readonly property bool urgent: workspace !== null && workspace.urgent === true
         property real surgeDir: 1
         property real surgeProgress: 1
+        property real impactDrama: 0
 
         onShownChanged: {
           if (!shown && squash.running) {
@@ -817,8 +1031,9 @@ Item {
         }
 
         // Liquid impact bulge, spread and damped wobble when the drop lands here.
-        function splash(dir) {
+        function splash(dir, drama) {
           cell.surgeDir = dir >= 0 ? 1 : -1
+          cell.impactDrama = drama || 0
           squash.restart()
           surgeAnim.restart()
         }
@@ -907,7 +1122,7 @@ Item {
               x: root.vertical ? (parent.width - width) * 0.5 : travel * k
               y: root.vertical ? travel * k : (parent.height - height) * 0.5
               radius: Math.min(width, height) / 2
-              opacity: Math.sin(Math.PI * cell.surgeProgress) * 0.72
+              opacity: Math.sin(Math.PI * cell.surgeProgress) * Math.min(0.95, 0.72 + cell.impactDrama * 0.20)
               gradient: Gradient {
                 orientation: root.vertical ? Gradient.Vertical : Gradient.Horizontal
                 GradientStop { position: 0.0; color: "transparent" }
@@ -919,19 +1134,60 @@ Item {
         }
 
         // Volume-preserving liquid slosh: impact bulge -> spread -> elastic settle.
+        // Multi-workspace impacts deform deeper and wobble with more energy.
         SequentialAnimation {
           id: squash
           ParallelAnimation {
-            NumberAnimation { target: squashScale; property: root.vertical ? "yScale" : "xScale"; to: 0.84; duration: 55; easing.type: Easing.OutQuad }
-            NumberAnimation { target: squashScale; property: root.vertical ? "xScale" : "yScale"; to: 1.32; duration: 55; easing.type: Easing.OutQuad }
+            NumberAnimation {
+              target: squashScale
+              property: root.vertical ? "yScale" : "xScale"
+              to: Math.max(0.65, 0.84 - cell.impactDrama * 0.14)
+              duration: 55
+              easing.type: Easing.OutQuad
+            }
+            NumberAnimation {
+              target: squashScale
+              property: root.vertical ? "xScale" : "yScale"
+              to: Math.min(1.66, 1.32 + cell.impactDrama * 0.26)
+              duration: 55
+              easing.type: Easing.OutQuad
+            }
           }
           ParallelAnimation {
-            NumberAnimation { target: squashScale; property: root.vertical ? "yScale" : "xScale"; to: 1.18; duration: 85; easing.type: Easing.OutQuad }
-            NumberAnimation { target: squashScale; property: root.vertical ? "xScale" : "yScale"; to: 0.76; duration: 85; easing.type: Easing.OutQuad }
+            NumberAnimation {
+              target: squashScale
+              property: root.vertical ? "yScale" : "xScale"
+              to: Math.min(1.38, 1.18 + cell.impactDrama * 0.15)
+              duration: Math.round(85 + cell.impactDrama * 15)
+              easing.type: Easing.OutQuad
+            }
+            NumberAnimation {
+              target: squashScale
+              property: root.vertical ? "xScale" : "yScale"
+              to: Math.max(0.66, 0.76 - cell.impactDrama * 0.09)
+              duration: Math.round(85 + cell.impactDrama * 15)
+              easing.type: Easing.OutQuad
+            }
           }
           ParallelAnimation {
-            NumberAnimation { target: squashScale; property: "xScale"; to: 1; duration: 280; easing.type: Easing.OutElastic; easing.amplitude: 0.75; easing.period: 0.44 }
-            NumberAnimation { target: squashScale; property: "yScale"; to: 1; duration: 280; easing.type: Easing.OutElastic; easing.amplitude: 0.75; easing.period: 0.44 }
+            NumberAnimation {
+              target: squashScale
+              property: "xScale"
+              to: 1
+              duration: Math.round(280 + cell.impactDrama * 90)
+              easing.type: Easing.OutElastic
+              easing.amplitude: 0.75 + cell.impactDrama * 0.35
+              easing.period: 0.44
+            }
+            NumberAnimation {
+              target: squashScale
+              property: "yScale"
+              to: 1
+              duration: Math.round(280 + cell.impactDrama * 90)
+              easing.type: Easing.OutElastic
+              easing.amplitude: 0.75 + cell.impactDrama * 0.35
+              easing.period: 0.44
+            }
           }
         }
 
@@ -941,7 +1197,7 @@ Item {
           property: "surgeProgress"
           from: 0
           to: 1
-          duration: 260
+          duration: Math.round(260 + cell.impactDrama * 55)
           easing.type: Easing.OutCubic
         }
 
