@@ -2,7 +2,7 @@
 # Switch the Omarchy shell to Omabar and lay out its widgets.
 #
 #   omabar-setup            use Omabar with its layout (backs up shell.json first)
-#   omabar-setup --restore  put back the shell.json from before setup
+#   omabar-setup --restore  put back the bar from before setup (other settings kept)
 #   omabar-setup --uninstall
 #                           remove Omabar completely: put back your old bar,
 #                           delete Omabar's hook, settings, tokens and cache,
@@ -251,15 +251,46 @@ doctor() {
   shell_log -b | grep -i -E 'omabar|bar option|falling back|shell\.json|plugin' | tail -n 60
 }
 
-if [[ ${1:-} == "--restore" ]]; then
-  [[ -f $BACKUP_FILE ]] || fail "no backup at $BACKUP_FILE; for Omarchy's default bar run: omarchy bar defaults"
-  # The backup is used up by restoring it, so the next setup backs up the
-  # layout as it is then rather than keeping this one forever.
-  mv "$BACKUP_FILE" "$CONFIG_FILE"
-  rm -f "$HOOK_FILE"
+# Put back the bar from before Omabar without touching anything else in
+# shell.json: only the "bar" section comes from the backup, and every other
+# setting you changed since setup stays as it is now. When the bar in use is
+# no longer Omabar, you picked another one yourself, so it is left alone.
+RESTORE_BAR_JQ='if ($before[0] | type) == "object" and ($before[0] | has("bar")) then .bar = $before[0].bar else del(.bar) end'
+restore_bar() {
+  if [[ ! -f $BACKUP_FILE ]]; then
+    return 1
+  fi
+  if [[ -s $CONFIG_FILE ]] && jq -e 'type == "object"' "$CONFIG_FILE" >/dev/null 2>&1; then
+    if ! omabar_selected; then
+      rm -f "$BACKUP_FILE"
+      echo "Your bar isn't Omabar any more, so it was left as it is"
+      return 0
+    fi
+    jq -e 'type == "object"' "$BACKUP_FILE" >/dev/null 2>&1 ||
+      fail "the backup at $BACKUP_FILE can't be read, so shell.json was left unchanged"
+    local merged
+    merged=$(mktemp "$CONFIG_FILE.XXXXXX")
+    scratch+=("$merged")
+    jq --slurpfile before "$BACKUP_FILE" "$RESTORE_BAR_JQ" "$CONFIG_FILE" >"$merged"
+    [[ -s $merged ]] || fail "could not write the restored layout; shell.json is unchanged"
+    mv "$merged" "$CONFIG_FILE"
+    rm -f "$BACKUP_FILE"
+  else
+    # shell.json is missing or unreadable, so there are no later changes to keep.
+    mv "$BACKUP_FILE" "$CONFIG_FILE"
+  fi
   omarchy-shell -q shell reloadConfig >/dev/null 2>&1 || true
   omarchy bar background "$(jq -r '.bar.background // "opaque"' "$CONFIG_FILE" 2>/dev/null || echo opaque)" >/dev/null 2>&1 || true
-  echo "Restored your bar to how it was before Omabar"
+  echo "Restored your bar to how it was before Omabar (your other shell settings are kept)"
+}
+
+if [[ ${1:-} == "--restore" ]]; then
+  [[ -f $BACKUP_FILE ]] || fail "no backup at $BACKUP_FILE; for Omarchy's default bar run: omarchy bar defaults"
+  command -v jq >/dev/null || fail "jq is required"
+  # The backup is used up by restoring it, so the next setup backs up the
+  # layout as it is then rather than keeping this one forever.
+  restore_bar
+  rm -f "$HOOK_FILE"
   exit 0
 fi
 
@@ -273,14 +304,24 @@ if [[ ${1:-} == "--uninstall" ]]; then
     clone_id=$(jq -er 'select(.omarchy.clonedFrom? == "omarchy.elsewhen") | .id' "$manifest" 2>/dev/null) || continue
     clone_dir=$(dirname "$manifest")
     if [[ -n $created && $clone_id == "$created" ]]; then
+      # A clone isn't a git checkout, so Omarchy keeps a dated backup of it
+      # when it is removed. Only the backup this removal makes is Omabar's to
+      # drop; any older backup under the same name is left alone.
+      shopt -s nullglob
+      backups_before=("$PLUGINS_DIR/.$clone_id.bak."*)
       if omarchy plugin remove "$clone_id" --yes >/dev/null 2>&1; then
-        # A clone isn't a git checkout, so Omarchy keeps a backup of it; this
-        # one was Omabar's, so nothing is lost by dropping it.
-        rm -rf "$PLUGINS_DIR/.$clone_id.bak."*
+        for backup in "$PLUGINS_DIR/.$clone_id.bak."*; do
+          new=1
+          for old in "${backups_before[@]}"; do
+            [[ $backup == "$old" ]] && new=0 && break
+          done
+          ((new)) && rm -rf -- "$backup"
+        done
         echo "Removed the world clock copy Omabar made ($clone_id)"
       else
         echo "omabar-setup: couldn't remove $clone_id; remove it with: omarchy plugin remove $clone_id" >&2
       fi
+      shopt -u nullglob
     elif [[ -f $PLUGIN_DIR/tools/omabar-elsewhen-patch.py ]]; then
       python3 "$PLUGIN_DIR/tools/omabar-elsewhen-patch.py" --undo "$clone_dir" || true
     fi
@@ -288,11 +329,8 @@ if [[ ${1:-} == "--uninstall" ]]; then
 
   # 2. The bar: your layout from before setup, or Omarchy's default bar when
   #    there's no backup and shell.json still points at Omabar.
-  if [[ -f $BACKUP_FILE ]]; then
-    mv "$BACKUP_FILE" "$CONFIG_FILE"
-    omarchy-shell -q shell reloadConfig >/dev/null 2>&1 || true
-    omarchy bar background "$(jq -r '.bar.background // "opaque"' "$CONFIG_FILE" 2>/dev/null || echo opaque)" >/dev/null 2>&1 || true
-    echo "Restored your bar to how it was before Omabar"
+  if [[ -f $BACKUP_FILE ]] && command -v jq >/dev/null; then
+    restore_bar
   elif omabar_selected || grep -q "$PLUGIN_ID" "$CONFIG_FILE" 2>/dev/null; then
     omarchy bar defaults >/dev/null 2>&1 || true
     omarchy bar reset >/dev/null 2>&1 || true
@@ -548,18 +586,24 @@ if [[ -x \$setup ]]; then
   "\$setup" --rebuild
   exit 0
 fi
-# Omabar was removed without --uninstall. If the bar still points at it, put
-# back the layout from before Omabar (or Omarchy's default bar), then remove
-# this hook.
+# Omabar was removed without --uninstall. If the bar is still Omabar, put
+# back the bar from before Omabar (or Omarchy's default bar), keeping every
+# other shell.json setting as it is now, then remove this hook.
 config="\$HOME/.config/omarchy/shell.json"
 backup="\$config.before-omabar"
-if grep -q "$PLUGIN_ID" "\$config" 2>/dev/null; then
-  if [[ -f \$backup ]]; then
-    mv "\$backup" "\$config"
-    omarchy-shell -q shell reloadConfig >/dev/null 2>&1 || true
+if [[ \$(jq -r '.bar.id // ""' "\$config" 2>/dev/null) == "$PLUGIN_ID" ]]; then
+  if [[ -f \$backup ]] && jq -e 'type == "object"' "\$backup" >/dev/null 2>&1; then
+    merged=\$(mktemp "\$config.XXXXXX")
+    if jq --slurpfile before "\$backup" '$RESTORE_BAR_JQ' "\$config" >"\$merged" && [[ -s \$merged ]]; then
+      mv "\$merged" "\$config"
+      rm -f "\$backup"
+    else
+      rm -f "\$merged"
+    fi
   else
     omarchy bar defaults >/dev/null 2>&1 || true
   fi
+  omarchy-shell -q shell reloadConfig >/dev/null 2>&1 || true
 fi
 rm -f "\$0"
 exit 0

@@ -65,7 +65,9 @@ Lofi Beats and your pinned playlists work right away. To list every playlist on 
 
 Discover Weekly is a different playlist for every account, so the menu asks for your link the first time you click it.
 
-Liked Songs isn't a playlist, and the Spotify app only opens its page when asked from outside; it doesn't start playing. So the first click on **Liked Songs** opens a terminal that asks you to approve playback control for your Spotify app once in the browser. From then on the button turns shuffle on and starts your Liked Songs on this computer through the Spotify Web API. Spotify only allows that with Premium; without it the button opens Liked Songs and a notification says why it didn't start.
+Liked Songs isn't a playlist, and most versions of the Spotify app only open its page when asked from outside; they don't start playing. So **Liked Songs** starts them through the Spotify Web API, which needs permission to control playback. **Connect Spotify** asks for that permission along with your playlists, so if you have connected, there is no second prompt. If you haven't (or you connected with an older Omabar that didn't ask for it), the button first asks the app to play; when the app only shows the page, a terminal opens once and asks you to approve playback control in the browser, then starts your Liked Songs. Spotify only allows Web API playback with Premium; without it the button opens Liked Songs and a notification says why it didn't start.
+
+Liked Songs only ever plays on the Spotify app on this computer. Omabar looks for the computer in your Spotify device list named after this machine's host name, which is what the Linux app calls itself, and never sends playback to your phone, a speaker or another computer on the same account. If it can't find this computer, nothing is started anywhere and a notification says so. If Spotify lists this computer under another name, run `omabar-spotify set-device` to see the names and `omabar-spotify set-device "<name>"` to pick one.
 
 ### Google Calendar
 
@@ -109,9 +111,11 @@ To remove Omabar completely:
 ~/.config/omarchy/plugins/goehringcory.omabar/bin/omabar-setup --uninstall
 ```
 
-`--uninstall` puts back the bar layout you had before setup (or Omarchy's default bar if there is no backup), removes the world clock copy setup made (a world clock copy you made yourself is kept and gets its own times back), deletes the update hook, deletes `~/.config/omabar/` (your Spotify login, calendar addresses and world clock cities) and `~/.cache/omabar/`, and then runs `omarchy plugin remove goehringcory.omabar` for you. Nothing of Omabar's is left behind.
+`--restore` and `--uninstall` put back only the `bar` section of `~/.config/omarchy/shell.json` from the copy setup saved; every other setting you changed in `shell.json` since then is kept as it is now. If you have already switched to a different bar yourself, they leave it alone.
 
-If you already removed it with `omarchy plugin remove` (or from a plugin manager) and the bar looks empty, run `omarchy bar defaults` for Omarchy's default bar. The next `omarchy update` also does this for you: the update hook notices Omabar is gone, puts back your layout from before setup, and deletes itself. `~/.config/omabar/` and `~/.cache/omabar/` can then be deleted by hand.
+`--uninstall` puts back the bar layout you had before setup (or Omarchy's default bar if there is no backup), removes the world clock copy setup made (a world clock copy you made yourself is kept and gets its own times back; of the backups Omarchy keeps of world clock copies, only the one made by this removal is deleted), deletes the update hook, deletes `~/.config/omabar/` (your Spotify login, calendar addresses and world clock cities) and `~/.cache/omabar/`, and then runs `omarchy plugin remove goehringcory.omabar` for you. Nothing of Omabar's is left behind.
+
+If you already removed it with `omarchy plugin remove` (or from a plugin manager) and the bar looks empty, run `omarchy bar defaults` for Omarchy's default bar. The next `omarchy update` also does this for you: the update hook notices Omabar is gone, puts back your bar from before setup (keeping your other shell settings), and deletes itself. `~/.config/omabar/` and `~/.cache/omabar/` can then be deleted by hand.
 
 ## Customize
 

@@ -216,6 +216,10 @@ class LikedSongsWebApi(unittest.TestCase):
         sp.APP_FILE = os.path.join(self.dir.name, "app")
         sp.time.sleep = lambda seconds: None
         sp.write_private(sp.APP_FILE, {"client_id": "a" * 32})
+        sp.socket.gethostname = lambda: "t480.home"
+        self.devices = [{"id": "phone", "name": "Cory's phone", "type": "Smartphone", "is_active": True},
+                        {"id": "desk", "name": "desktop", "type": "Computer"},
+                        {"id": "t480", "name": "T480", "type": "Computer"}]
         self.sends = []
         self.refuse = {}            # path fragment -> HTTP code
         self.reason = "{}"
@@ -224,7 +228,7 @@ class LikedSongsWebApi(unittest.TestCase):
             if url.endswith("/me"):
                 return {"id": "cory"}
             if "devices" in url:
-                return {"devices": [{"id": "phone", "type": "Smartphone"}, {"id": "t480", "type": "Computer"}]}
+                return {"devices": self.devices}
             if "/me/tracks" in url:
                 return {"total": 2, "items": [{"track": {"uri": "spotify:track:1"}}, {"track": {"uri": "spotify:track:2"}},
                                               {"track": None}, {"track": {"uri": "spotify:local:x"}}]}
@@ -264,6 +268,32 @@ class LikedSongsWebApi(unittest.TestCase):
         self.refuse = {"/play": 400}
         self.assertEqual(self.sp.web_play_liked(False), "ok")
         self.assertEqual(self.sends, [("PUT", "play", {"uris": ["spotify:track:1", "spotify:track:2"]})])
+
+    def test_picks_this_computer_not_the_active_phone_or_another_computer(self):
+        self.assertEqual(self.sp.this_device({"Authorization": "Bearer t"}), "t480")
+
+    def test_never_falls_back_to_another_device(self):
+        self.login(self.sp.SCOPES)
+        self.devices = [d for d in self.devices if d["id"] != "t480"]
+        self.assertEqual(self.sp.web_play_liked(True), "device")
+        self.assertEqual(self.sends, [])
+
+    def test_two_apps_with_this_name_need_one_active(self):
+        auth = {"Authorization": "Bearer t"}
+        self.devices.append({"id": "t480-old", "name": "t480", "type": "Computer"})
+        self.assertEqual(self.sp.this_device(auth), "")
+        self.devices[-1]["is_active"] = True
+        self.assertEqual(self.sp.this_device(auth), "t480-old")
+
+    def test_saved_device_name_wins(self):
+        auth = {"Authorization": "Bearer t"}
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.sp.cmd_set_device("Desktop")
+        self.assertEqual(self.sp.read_json(self.sp.APP_FILE)["client_id"], "a" * 32)
+        self.assertEqual(self.sp.this_device(auth), "desk")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.sp.cmd_set_device("")
+        self.assertEqual(self.sp.this_device(auth), "t480")
 
     def test_premium_required(self):
         self.login(self.sp.SCOPES)
