@@ -186,7 +186,6 @@ FocusScope {
         font.pixelSize: Style.font.bodySmall
         text: card.listening ? "Listening · click the mic or press Alt+Space to stop"
           : !card.dictationReady ? "Click the mic to set up dictation"
-          : card.current.prefill === "" ? "Enter copies it and opens " + card.current.full + " · paste with Ctrl+V"
           : "Enter to ask · Shift+Enter for a new line"
       }
 

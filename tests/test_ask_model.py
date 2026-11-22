@@ -27,32 +27,36 @@ class AskModelTest(unittest.TestCase):
         q = "What's 2 + 2? & why #math\nsecond line"
         plan = call("plan", "claude", "  " + q + "  ")
         self.assertTrue(plan["url"].startswith("https://claude.ai/new?q="))
-        self.assertFalse(plan["copy"])
+        # Claude's link only fills the question in, so Enter is pressed after.
+        self.assertEqual(plan["mode"], "enter")
         self.assertEqual(unquote(plan["url"].split("?q=", 1)[1]), q)
         # Nothing that would end the query or start a fragment survives raw.
         self.assertNotIn("&", plan["url"].split("?q=", 1)[1])
         self.assertNotIn("#", plan["url"])
 
-    def test_gemini_goes_through_the_clipboard(self):
+    def test_gemini_is_pasted_in(self):
         plan = call("plan", "gemini", "hello")
-        self.assertTrue(plan["copy"])
+        self.assertEqual(plan["mode"], "paste")
+        self.assertEqual(plan["title"], "Gemini")
         self.assertEqual(plan["url"], "https://gemini.google.com/app")
 
-    def test_grok_link_and_agents_use_clipboard(self):
-        self.assertTrue(call("plan", "grok", "hi")["url"].startswith("https://grok.com/?q="))
+    def test_grok_link_and_agents_are_pasted_in(self):
+        grok = call("plan", "grok", "hi")
+        self.assertTrue(grok["url"].startswith("https://grok.com/?q="))
+        self.assertEqual(grok["mode"], "link")
         for agent in ("duet", "dot"):
-            self.assertTrue(call("plan", agent, "hi")["copy"])
+            self.assertEqual(call("plan", agent, "hi")["mode"], "paste")
 
     def test_links_setting_picks_the_page(self):
         plan = call("plan", "duet", "hi", {"duet": "https://claude.ai/duet"})
         self.assertEqual(plan["url"], "https://claude.ai/duet")
-        self.assertTrue(plan["copy"])
+        self.assertEqual(plan["mode"], "paste")
         # Only https links are taken.
         self.assertEqual(call("plan", "duet", "hi", {"duet": "javascript:alert(1)"})["url"], "https://claude.ai/")
 
-    def test_long_question_falls_back_to_clipboard(self):
+    def test_long_question_is_pasted_in(self):
         plan = call("plan", "chatgpt", "word " * 3000)
-        self.assertTrue(plan["copy"])
+        self.assertEqual(plan["mode"], "paste")
         self.assertEqual(plan["url"], "https://chatgpt.com/")
 
     def test_empty_question_asks_nothing(self):

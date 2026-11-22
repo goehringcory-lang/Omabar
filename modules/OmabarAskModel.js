@@ -1,29 +1,31 @@
-// What the Ask box does with a question: which chat site it opens, with the
-// question already in the link where the site takes one, or on the clipboard
-// where it doesn't. Kept apart from the QML so tests/test_ask_model.py can run
-// it under node.
+// What the Ask box does with a question: which chat site it opens and how the
+// question gets asked there. Kept apart from the QML so
+// tests/test_ask_model.py can run it under node.
 
 // Each provider's normal chat page (not a coding tool).
-//   name       - what the chip says
-//   full       - the product's full name, for notices
-//   prefill    - link that opens a new chat with the question filled in ("" if none)
-//   home       - page to open when the question goes on the clipboard instead
-//   sends      - whether the prefilled link sends the question by itself
+//   name    - what the chip says
+//   full    - the product's full name, for notices
+//   prefill - link that opens a new chat with the question in it ("" if none)
+//   home    - page to open when the question is pasted in instead
+//   sends   - whether the prefilled link sends the question by itself; if
+//             not, bin/omabar-ask presses Enter once the page is up
+//   title   - a word in the browser window's title once the site is open,
+//             so keys are only ever sent to it
 //
-// Claude Duet and ChatGPT Dots are agents with no link that carries a
-// question, so they get the clipboard; their page can be set with the
-// "links" setting once you know the address you use.
+// Gemini, Claude Duet and ChatGPT Dots have no link that carries a question,
+// so bin/omabar-ask pastes it into the chat box and presses Enter. Duet's and
+// Dot's page can be set with the "links" setting.
 var PROVIDERS = [
-  { id: "claude",  name: "Claude",  full: "Claude",       prefill: "https://claude.ai/new?q=", home: "https://claude.ai/new",         sends: false },
-  { id: "chatgpt", name: "ChatGPT", full: "ChatGPT",      prefill: "https://chatgpt.com/?q=",  home: "https://chatgpt.com/",          sends: true  },
-  { id: "gemini",  name: "Gemini",  full: "Gemini",       prefill: "",                         home: "https://gemini.google.com/app", sends: false },
-  { id: "grok",    name: "Grok",    full: "Grok",         prefill: "https://grok.com/?q=",     home: "https://grok.com/",             sends: true  },
-  { id: "duet",    name: "Duet",    full: "Claude Duet",  prefill: "",                         home: "https://claude.ai/",            sends: false },
-  { id: "dot",     name: "Dot",     full: "ChatGPT Dot",  prefill: "",                         home: "https://chatgpt.com/",          sends: false }
+  { id: "claude",  name: "Claude",  full: "Claude",      prefill: "https://claude.ai/new?q=", home: "https://claude.ai/new",         sends: false, title: "Claude" },
+  { id: "chatgpt", name: "ChatGPT", full: "ChatGPT",     prefill: "https://chatgpt.com/?q=",  home: "https://chatgpt.com/",          sends: true,  title: "ChatGPT" },
+  { id: "gemini",  name: "Gemini",  full: "Gemini",      prefill: "",                         home: "https://gemini.google.com/app", sends: false, title: "Gemini" },
+  { id: "grok",    name: "Grok",    full: "Grok",        prefill: "https://grok.com/?q=",     home: "https://grok.com/",             sends: true,  title: "Grok" },
+  { id: "duet",    name: "Duet",    full: "Claude Duet", prefill: "",                         home: "https://claude.ai/",            sends: false, title: "Claude" },
+  { id: "dot",     name: "Dot",     full: "ChatGPT Dot", prefill: "",                         home: "https://chatgpt.com/",          sends: false, title: "ChatGPT" }
 ]
 
 // Links longer than this go wrong on some sites (cut short, or refused), so a
-// longer question goes on the clipboard instead.
+// longer question is pasted in instead.
 var MAX_LINK = 6000
 
 function provider(id) {
@@ -55,8 +57,10 @@ function clean(text) {
   return String(text === undefined || text === null ? "" : text).replace(/\r\n?/g, "\n").trim()
 }
 
-// { url, copy, sends, name }: open `url`; if `copy` is set, put the question on
-// the clipboard first, because the link can't carry it.
+// { url, mode, title, name } for bin/omabar-ask: open `url`, then
+//   "link"  - nothing more (the link asks it)
+//   "enter" - press Enter (the link filled it in)
+//   "paste" - paste the question into the chat box and press Enter
 // `links` (optional, from the bar setting) maps an id to the page to open for
 // it instead of the usual one, e.g. { duet: "https://claude.ai/…" }.
 function plan(id, text, links) {
@@ -66,9 +70,9 @@ function plan(id, text, links) {
   if (!question) return null
   if (p.prefill && !own) {
     var url = p.prefill + encodeURIComponent(question)
-    if (url.length <= MAX_LINK) return { url: url, copy: false, sends: p.sends, name: p.full }
+    if (url.length <= MAX_LINK) return { url: url, mode: p.sends ? "link" : "enter", title: p.title, name: p.full }
   }
-  return { url: own || p.home, copy: true, sends: false, name: p.full }
+  return { url: own || p.home, mode: "paste", title: p.title, name: p.full }
 }
 
 // Keeps the last few questions, newest first, without repeats.

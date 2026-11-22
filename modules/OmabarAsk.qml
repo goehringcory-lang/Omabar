@@ -5,10 +5,11 @@
 // where you are already signed in. The answer is that site's own page; nothing
 // is sent from the bar itself.
 //
-// Claude fills the question in and waits for Enter; ChatGPT and Grok send it.
-// Gemini, Duet and Dot have no link that carries a question, so it goes on the
-// clipboard and the site opens for you to paste (Ctrl+V). A very long question
-// does the same on any site.
+// Every site is asked for you; nothing to paste. ChatGPT and Grok take the
+// question in their link. Claude's link fills it in and Enter is pressed once
+// the page is up. Gemini, Claude Duet and ChatGPT Dot have no such link, so
+// bin/omabar-ask pastes it into their chat box and presses Enter, only once
+// the browser window's title shows that site.
 //
 // Dictation uses Omarchy's own (Setup > Defaults > Dictation, e.g. Voxtype):
 // the mic starts and stops it, and it types into the box. Alt+Space works too.
@@ -17,7 +18,9 @@
 //   providers - which sites to offer, in order (default all of them:
 //               ["claude", "chatgpt", "gemini", "grok", "duet", "dot"])
 //   links     - a page to open for a site instead of the usual one, e.g.
-//               {"duet": "https://claude.ai/…"} (the question goes on the clipboard)
+//               {"duet": "https://claude.ai/…"} (the question is pasted in)
+//   typeDelay - ms a site gets to load before the question is typed in
+//               (default 2500); raise it if a slow page misses it
 //   provider  - the one picked at first (default "claude"); the last one you
 //               used is remembered in ~/.config/omabar/ask.json
 //   hover     - false opens the box on click only (default true)
@@ -44,6 +47,9 @@ Item {
   readonly property var providers: Model.shown(setting("providers", ["claude", "chatgpt", "gemini", "grok", "duet", "dot"]))
   readonly property bool hoverOpens: setting("hover", true) !== false
   readonly property string fontName: bar && bar.fontFamily ? bar.fontFamily : Style.font.family
+  readonly property string helper: String(Qt.resolvedUrl("../bin/omabar-ask")).replace(/^file:\/\//, "")
+  // How long a site gets to load before the question is typed in, in ms.
+  readonly property int typeDelay: Math.max(500, Number(setting("typeDelay", 2500)) || 2500)
   readonly property string storeFile: (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config") + "/omabar/ask.json"
 
   property string providerId: {
@@ -125,12 +131,8 @@ Item {
     save()
     if (panel.loadedContent) panel.loadedContent.clear()
     close()
-    // The question and link travel as arguments, never inside the command
-    // text, so nothing in them is read by the shell.
-    var script = plan.copy
-      ? 'printf "%s" "$1" | wl-copy; omarchy-notification-send -g "\u{F0674}" "Question copied for $3" "Paste it with Ctrl+V"; omarchy-launch-browser "$2" || xdg-open "$2"'
-      : 'omarchy-launch-browser "$2" || xdg-open "$2"'
-    Quickshell.execDetached(["sh", "-c", script, "sh", Model.clean(text), plan.url, plan.name])
+    // The question and link travel as arguments, never inside command text.
+    Quickshell.execDetached([root.helper, plan.mode, plan.url, plan.title, plan.name, Model.clean(text), String(root.typeDelay)])
   }
 
   // ── dictation ───────────────────────────────────────────────────────
