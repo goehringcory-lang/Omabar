@@ -32,7 +32,9 @@ Calendar addresses and tokens live in ~/.config/omabar/, readable only by you.
 """
 import base64
 import concurrent.futures
+import contextlib
 import datetime as dt
+import fcntl
 import hashlib
 import http.server
 import json
@@ -430,6 +432,33 @@ def prefs():
     return read_json(PREFS_FILE, {}) or {}
 
 
+class PrefsUnreadable(Exception):
+    """calendars.json is there but can't be read, so it mustn't be replaced."""
+
+
+@contextlib.contextmanager
+def editing_prefs():
+    """calendars.json to change and save, one change at a time. Two quick
+    clicks each wait for the other, so neither drops the other's color or
+    choice, and a file that is there but can't be read is never overwritten
+    with a fresh one: that would lose every color and choice in it."""
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    fd = os.open(PREFS_FILE + ".lock", os.O_WRONLY | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            with open(PREFS_FILE) as handle:
+                data = json.load(handle)
+        except FileNotFoundError:
+            data = {}
+        except (OSError, ValueError) as error:
+            raise PrefsUnreadable(f"{PREFS_FILE} can't be read ({error}), so it was left as it is.") from error
+        if not isinstance(data, dict):
+            raise PrefsUnreadable(f"{PREFS_FILE} isn't a settings file, so it was left as it is.")
+        yield data
+        write_private(PREFS_FILE, data)
+
+
 def fetch_calendars():
     cached = read_cache("gcal-calendars.json", 3600)
     if cached is not None:
@@ -538,13 +567,18 @@ def cmd_calendars():
 
 
 def cmd_toggle(calendar_id):
-    data = prefs()
-    chosen = data.setdefault("shown", {})
     calendars = all_calendars()
-    match = next((c for c in calendars if c["id"] == calendar_id), None)
-    current = shown(match, chosen) if match else chosen.get(calendar_id, False)
-    chosen[calendar_id] = not current
-    write_private(PREFS_FILE, data)
+    try:
+        with editing_prefs() as data:
+            chosen = data.get("shown")
+            if not isinstance(chosen, dict):
+                chosen = data["shown"] = {}
+            match = next((c for c in calendars if c["id"] == calendar_id), None)
+            current = shown(match, chosen) if match else chosen.get(calendar_id, False)
+            chosen[calendar_id] = not current
+    except PrefsUnreadable as error:
+        print(json.dumps({"id": calendar_id, "error": str(error)}))
+        return 1
     clear_cache("gcal-events")
     print(json.dumps({"id": calendar_id, "shown": chosen[calendar_id]}))
     return 0
@@ -566,15 +600,16 @@ def find_calendar(calendars, text):
 
 
 def set_color(calendar_id, value):
-    data = prefs()
-    colors = data.get("colors")
-    if not isinstance(colors, dict):
-        colors = data["colors"] = {}
-    if value:
-        colors[calendar_id] = value
-    else:
-        colors.pop(calendar_id, None)
-    write_private(PREFS_FILE, data)
+    """Save a calendar's color (None goes back to its own). Raises
+    PrefsUnreadable rather than replace a calendars.json it can't read."""
+    with editing_prefs() as data:
+        colors = data.get("colors")
+        if not isinstance(colors, dict):
+            colors = data["colors"] = {}
+        if value:
+            colors[calendar_id] = value
+        else:
+            colors.pop(calendar_id, None)
     clear_cache("gcal-events")
 
 
@@ -781,7 +816,11 @@ def main(argv):
     if command == "disconnect":
         return cmd_disconnect()
     if command == "color":
-        return cmd_color(rest)
+        try:
+            return cmd_color(rest)
+        except PrefsUnreadable as error:
+            print(error, file=sys.stderr)
+            return 1
     if command == "toggle" and len(rest) != 1:
         print(__doc__, file=sys.stderr)
         return 2

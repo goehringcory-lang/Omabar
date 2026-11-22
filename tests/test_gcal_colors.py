@@ -4,6 +4,8 @@
 """
 import importlib.machinery
 import importlib.util
+import contextlib
+import io
 import json
 import os
 import sys
@@ -68,6 +70,31 @@ class Colors(unittest.TestCase):
         self.assertEqual(self.gcal.cmd_color(["nope", "orange"]), 1)
         self.assertEqual(self.gcal.cmd_color(["Personal", "purple"]), 1)
         self.assertFalse(os.path.exists(self.gcal.PREFS_FILE))
+
+    def test_unreadable_settings_are_never_replaced(self):
+        with open(self.gcal.PREFS_FILE, "w") as handle:
+            handle.write('{"colors": {"ical-a": "#8e24aa"')   # cut off mid-write
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.gcal.cmd_toggle("ical-a"), 1)
+        with self.assertRaises(self.gcal.PrefsUnreadable):
+            self.gcal.set_color("ical-a", "#ff8c00")
+        with open(self.gcal.PREFS_FILE) as handle:
+            self.assertEqual(handle.read(), '{"colors": {"ical-a": "#8e24aa"')
+
+    def test_overlapping_saves_keep_both_colors(self):
+        import threading
+        start = threading.Barrier(8)
+
+        def pick(i):
+            start.wait()
+            self.gcal.set_color(f"cal-{i}", f"#00000{i}")
+        threads = [threading.Thread(target=pick, args=(i,)) for i in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        with open(self.gcal.PREFS_FILE) as handle:
+            self.assertEqual(len(json.load(handle)["colors"]), 8)
 
 
 if __name__ == "__main__":

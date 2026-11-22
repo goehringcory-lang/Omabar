@@ -13,6 +13,10 @@
         Print whether an account is connected.
     omabar-spotify set-discover-weekly [link]
         Save your Discover Weekly link for the player's one-click button.
+    omabar-spotify set-device [name]
+        Name the Spotify app on this computer, for when Spotify lists it under
+        something other than the host name. Without a name, list the
+        computers Spotify sees. Liked Songs only ever starts on this device.
 
 Playback goes through Spotify's own MPRIS interface on the session bus (with
 busctl, which every systemd desktop has), so `play` works without logging in. Listing playlists uses the Spotify Web API with your own app's
@@ -30,6 +34,7 @@ import re
 import secrets
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -240,15 +245,36 @@ def premium_needed(error):
         return False
 
 
+def device_names():
+    """The names the Spotify app on this computer can have in the Web API's
+    device list: the one saved as "device" in spotify.json, else this
+    computer's host name, which is what the Linux app calls itself."""
+    saved = str((read_json(APP_FILE, {}) or {}).get("device") or "").strip()
+    if saved:
+        return {saved.casefold()}
+    host = socket.gethostname().strip()
+    return {name.casefold() for name in (host, host.split(".")[0]) if name}
+
+
 def this_device(auth):
-    """The Spotify app on this computer, as the Web API names it. A just-started
-    app takes a few seconds to appear."""
+    """The Spotify app on this computer, as the Web API names it, or "" when it
+    isn't in the list. Only a Computer whose name is this one's counts, so the
+    command never starts or moves playback on a phone, a speaker or another
+    computer on the same account. A just-started app takes a few seconds to
+    appear."""
+    names = device_names()
     for _ in range(8):
         devices = api_request("https://api.spotify.com/v1/me/player/devices", headers=auth).get("devices") or []
-        usable = [d for d in devices if d.get("id") and not d.get("is_restricted")]
-        here = [d for d in usable if d.get("type") == "Computer"] or usable
-        if here:
+        here = [d for d in devices
+                if d.get("id") and not d.get("is_restricted") and d.get("type") == "Computer"
+                and str(d.get("name") or "").strip().casefold() in names]
+        if len(here) == 1:
             return here[0]["id"]
+        if len(here) > 1:
+            # Two apps with this computer's name: the one already playing here,
+            # or none rather than a guess.
+            active = [d for d in here if d.get("is_active")]
+            return active[0]["id"] if len(active) == 1 else ""
         time.sleep(1)
     return ""
 
@@ -377,7 +403,9 @@ def cmd_liked(shuffle=True, may_ask=True):
     elif outcome == "login":
         notify("Liked Songs is open. To let Omabar start it, run: omabar-spotify login")
     elif outcome == "device":
-        notify("Liked Songs is open, but Spotify's servers don't see the app on this computer yet. Try again in a moment.")
+        notify("Liked Songs is open, but Spotify's servers don't list the app on this computer, so nothing was started elsewhere. "
+               f"Try again in a moment, or if Spotify calls this computer something else, save that name: "
+               f"omabar-spotify set-device \"<name>\"")
     else:
         notify("Liked Songs is open, but Spotify didn't start it from the bar. Press play there.")
     return 1
@@ -612,6 +640,36 @@ def cmd_set_discover(link=None):
     return result.returncode
 
 
+def cmd_set_device(name=None):
+    if name is None:
+        try:
+            token = access_token()
+            if not token:
+                raise NeedsLogin()
+            devices = api_request("https://api.spotify.com/v1/me/player/devices",
+                                  headers={"Authorization": f"Bearer {token}"}).get("devices") or []
+        except NeedsLogin:
+            print("Connect Spotify first: omabar-spotify login")
+            return 1
+        except (urllib.error.URLError, OSError, ValueError) as error:
+            print(f"Couldn't ask Spotify: {error}")
+            return 1
+        computers = [str(d.get("name") or "") for d in devices if d.get("type") == "Computer"]
+        print("Computers Spotify sees right now: " + (", ".join(computers) or "none (is the app open?)"))
+        print(f"Liked Songs starts on the one named: {', '.join(sorted(device_names()))}")
+        print('Pick another with: omabar-spotify set-device "<name>"')
+        return 0
+    app = read_json(APP_FILE, {}) or {}
+    if name.strip():
+        app["device"] = name.strip()
+    else:
+        app.pop("device", None)
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    write_private(APP_FILE, app)
+    print(f"Liked Songs will start on: {', '.join(sorted(device_names()))}")
+    return 0
+
+
 def main(argv):
     if len(argv) < 2 or argv[1] in ("-h", "--help"):
         print(__doc__)
@@ -627,6 +685,8 @@ def main(argv):
         return cmd_login("--then-liked" in argv[2:], "--no-shuffle" not in argv[2:])
     if command == "set-discover-weekly":
         return cmd_set_discover(argv[2] if len(argv) > 2 else None)
+    if command == "set-device":
+        return cmd_set_device(argv[2] if len(argv) > 2 else None)
     if command == "status":
         return cmd_status()
     print(__doc__, file=sys.stderr)
