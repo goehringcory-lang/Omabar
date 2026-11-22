@@ -1,0 +1,102 @@
+#!/bin/bash
+# Asks a chat site a question for the bar's assistant (modules/OmabarAsk.qml).
+#
+#   omabar-ask <mode> <url> <title> <name> <question> [settle-ms]
+#
+# Opens <url> in the default browser, then, for sites with no link that sends
+# a question by itself, asks it the way you would:
+#   link   the link sends the question; nothing more to do (ChatGPT, Grok)
+#   enter  the link fills the question in; press Enter (Claude)
+#   paste  paste the question into the chat box and press Enter (Gemini,
+#          Claude Duet, ChatGPT Dot, and any question too long for a link)
+#
+# Keys are only sent once the focused window's title names the site (<title>,
+# e.g. "Gemini") and the page has had [settle-ms] (default 2500) to load, so
+# they never land in another app. If the page doesn't come up in time, the
+# question is left on the clipboard with a notice to paste it.
+
+mode=$1
+url=$2
+title=$3
+name=$4
+question=$5
+settle_ms=${6:-2500}
+
+if [[ -z $url || -z $question ]]; then
+  echo "Usage: omabar-ask <link|enter|paste> <url> <title> <name> <question> [settle-ms]" >&2
+  exit 1
+fi
+[[ $settle_ms =~ ^[0-9]+$ ]] || settle_ms=2500
+
+notify() {
+  omarchy-notification-send -g $'\U000F0674' "$1" "$2" 2>/dev/null || notify-send "$1" "$2" 2>/dev/null || true
+}
+
+leave_on_clipboard() {
+  printf "%s" "$question" | wl-copy
+  notify "Question copied for $name" "$1 Paste it with Ctrl+V."
+}
+
+focused_title() {
+  hyprctl activewindow -j 2>/dev/null | jq -r '.title // ""' 2>/dev/null
+}
+
+site_focused() {
+  local now
+  now=$(focused_title)
+  [[ ${now,,} == *"${title,,}"* ]]
+}
+
+if ! omarchy-launch-browser "$url"; then
+  xdg-open "$url" || exit 1
+fi
+
+if [[ $mode == "link" ]]; then
+  exit 0
+fi
+
+if [[ $mode == "paste" ]] && omarchy-cmd-missing wtype 2>/dev/null; then
+  leave_on_clipboard "wtype isn't installed, so it couldn't be typed in."
+  exit 0
+fi
+
+# Wait up to 20 seconds for the site to be the focused window.
+wait_ticks=${OMABAR_ASK_WAIT_TICKS:-100}
+for ((i = 0; i < wait_ticks; i++)); do
+  site_focused && break
+  sleep 0.2
+done
+if ! site_focused; then
+  [[ $mode == "paste" ]] && leave_on_clipboard "$name took too long to open."
+  exit 0
+fi
+
+# Let the page finish loading and put the cursor in its chat box.
+sleep "$(printf "%d.%03d" $((settle_ms / 1000)) $((settle_ms % 1000)))"
+
+if ! site_focused; then
+  # You switched away while it loaded; never type into another window.
+  [[ $mode == "paste" ]] && leave_on_clipboard "You switched windows before it could be asked."
+  exit 0
+fi
+
+if [[ $mode == "paste" ]]; then
+  # Borrow the clipboard for the paste and give back what was on it.
+  saved=""
+  had_text=0
+  if wl-paste --list-types 2>/dev/null | grep -q "^text/plain"; then
+    saved=$(wl-paste --no-newline 2>/dev/null)
+    had_text=1
+  fi
+  printf "%s" "$question" | wl-copy
+  sleep 0.15
+  wtype -M ctrl -k v -m ctrl
+  sleep 0.4
+  wtype -k Return
+  sleep 0.5
+  if ((had_text)); then
+    printf "%s" "$saved" | wl-copy
+  fi
+else
+  wtype -k Return
+fi
