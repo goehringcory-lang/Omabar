@@ -14,7 +14,7 @@
 #
 # Layout
 #   left    Omarchy menu (accent tile), workspace dots with a water-drop switch
-#   center  quick indicators, Spotify mini player, split-flap clock
+#   center  quick indicators, Ask box, Spotify mini player, split-flap clock
 #   (the world clock, restyled with split-flap times, omaplug, the plugin
 #    manager, and weather sit just right of the clock)
 #   right   the hover drawer handle (always leftmost), AI usage (Omarchy
@@ -446,6 +446,7 @@ jq -S \
         { id: "omarchy.indicators" }
       ],
       center: [
+        { id: "omabar-ask", type: "qml", source: ($dir + "/modules/OmabarAsk.qml") },
         { id: "omabar-player", type: "qml", source: ($dir + "/modules/OmabarPlayer.qml"), player: "spotify", maxWidth: 220 },
         { id: "omabar-clock", type: "qml", source: ($dir + "/modules/OmabarClock.qml") }
       ],
