@@ -54,6 +54,25 @@ class AskModelTest(unittest.TestCase):
         # Only https links are taken.
         self.assertEqual(call("plan", "duet", "hi", {"duet": "javascript:alert(1)"})["url"], "https://claude.ai/")
 
+    def test_pictures_are_always_pasted_in(self):
+        # Even sites whose link asks by itself: a picture can't ride in a link.
+        for pid, home in (("claude", "https://claude.ai/new"), ("chatgpt", "https://chatgpt.com/"), ("grok", "https://grok.com/")):
+            plan = call("plan", pid, "what is this?", None, 1)
+            self.assertEqual(plan["mode"], "paste")
+            self.assertEqual(plan["url"], home)
+
+    def test_a_picture_alone_is_a_question(self):
+        self.assertIsNone(call("plan", "claude", "  ", None, 0))
+        self.assertEqual(call("plan", "claude", "", None, 2)["mode"], "paste")
+
+    def test_add_picture_caps_and_skips_repeats(self):
+        pics = []
+        for i in range(6):
+            pics = call("addPicture", pics, "/run/user/1000/omabar-ask/p%d.png" % i)
+        self.assertEqual(len(pics), 4)
+        self.assertEqual(call("addPicture", ["/a.png"], "/a.png"), ["/a.png"])
+        self.assertEqual(call("addPicture", ["/a.png"], ""), ["/a.png"])
+
     def test_long_question_is_pasted_in(self):
         plan = call("plan", "chatgpt", "word " * 3000)
         self.assertEqual(plan["mode"], "paste")

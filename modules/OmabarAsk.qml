@@ -11,6 +11,13 @@
 // bin/omabar-ask pastes it into their chat box and presses Enter, only once
 // the browser window's title shows that site.
 //
+// Pictures: Ctrl+V with a screenshot or photo on the clipboard (or a picture
+// file copied in a file manager) adds it to the box as a thumbnail, up to
+// four. A question with pictures is always pasted in: bin/omabar-ask pastes
+// each picture into the site's chat box, then the text, waits uploadDelay for
+// the upload and presses Enter. Pictures wait in $XDG_RUNTIME_DIR/omabar-ask
+// (private to you) and are removed once asked.
+//
 // Dictation uses Omarchy's own (Setup > Defaults > Dictation, e.g. Voxtype):
 // the mic starts and stops it, and it types into the box. Alt+Space works too.
 //
@@ -21,6 +28,8 @@
 //               {"duet": "https://claude.ai/…"} (the question is pasted in)
 //   typeDelay - ms a site gets to load before the question is typed in
 //               (default 2500); raise it if a slow page misses it
+//   uploadDelay - ms a site gets to upload pasted pictures before Enter is
+//               pressed (default 3000); raise it for big photos
 //   provider  - the one picked at first (default "claude"); the last one you
 //               used is remembered in ~/.config/omabar/ask.json
 //   hover     - false opens the box on click only (default true)
@@ -48,8 +57,11 @@ Item {
   readonly property bool hoverOpens: setting("hover", true) !== false
   readonly property string fontName: bar && bar.fontFamily ? bar.fontFamily : Style.font.family
   readonly property string helper: String(Qt.resolvedUrl("../bin/omabar-ask")).replace(/^file:\/\//, "")
+  readonly property string imageHelper: String(Qt.resolvedUrl("../bin/omabar-ask-image")).replace(/^file:\/\//, "")
   // How long a site gets to load before the question is typed in, in ms.
   readonly property int typeDelay: Math.max(500, Number(setting("typeDelay", 2500)) || 2500)
+  // How long pasted pictures get to upload before Enter is pressed, in ms.
+  readonly property int uploadDelay: Math.max(500, Number(setting("uploadDelay", 3000)) || 3000)
   readonly property string storeFile: (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config") + "/omabar/ask.json"
 
   property string providerId: {
@@ -58,6 +70,8 @@ Item {
     return providers.length ? providers[0].id : "claude"
   }
   property var history: []
+  // Pictures pasted into the box, as file paths.
+  property var pictures: []
 
   // ── open / close ────────────────────────────────────────────────────
   property bool open: false
@@ -83,7 +97,7 @@ Item {
 
   // Stays open while there's a question in the box or dictation is running,
   // so a stray pointer never throws away what you typed.
-  readonly property bool busy: (panel.loadedContent && panel.loadedContent.hasText) || root.listening
+  readonly property bool busy: (panel.loadedContent && panel.loadedContent.hasText) || root.listening || root.pictures.length > 0
 
   Timer {
     id: openTimer
@@ -122,17 +136,56 @@ Item {
     Quickshell.execDetached(["sh", "-c", 'umask 077; mkdir -p "$(dirname "$1")" && printf "%s" "$2" > "$1.tmp" && mv -f "$1.tmp" "$1"', "sh", root.storeFile, json])
   }
 
+  // ── pictures ────────────────────────────────────────────────────────
+  // Ctrl+V in the box: save the clipboard's picture if it holds one,
+  // otherwise paste its text as usual.
+  Process {
+    id: grabber
+    command: [root.imageHelper, "grab"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var path = String(text || "").trim()
+        var card = panel.loadedContent
+        if (path === "") {
+          if (card) card.pasteText()
+          return
+        }
+        var next = Model.addPicture(root.pictures, path)
+        if (next.length === root.pictures.length) {
+          // Full (or the same one again): don't keep the extra copy.
+          Quickshell.execDetached([root.imageHelper, "drop", path])
+          if (card && root.pictures.length >= Model.MAX_PICTURES) card.flash("Up to " + Model.MAX_PICTURES + " pictures per question")
+          return
+        }
+        root.pictures = next
+      }
+    }
+  }
+
+  function pastePicture() {
+    if (!grabber.running) grabber.running = true
+  }
+
+  function removePicture(path) {
+    root.pictures = root.pictures.filter(function(p) { return p !== path })
+    Quickshell.execDetached([root.imageHelper, "drop", path])
+  }
+
   // ── asking ──────────────────────────────────────────────────────────
   function ask(id, text) {
-    var plan = Model.plan(id, text, root.setting("links", null))
+    var pictures = root.pictures.slice()
+    var plan = Model.plan(id, text, root.setting("links", null), pictures.length)
     if (!plan) return
     root.providerId = id
-    root.history = Model.remember(root.history, text, 20)
+    if (Model.clean(text) !== "") root.history = Model.remember(root.history, text, 20)
     save()
     if (panel.loadedContent) panel.loadedContent.clear()
+    // The helper removes the saved pictures once they're in.
+    root.pictures = []
     close()
-    // The question and link travel as arguments, never inside command text.
-    Quickshell.execDetached([root.helper, plan.mode, plan.url, plan.title, plan.name, Model.clean(text), String(root.typeDelay)])
+    // The question, link and picture paths travel as arguments, never inside
+    // command text.
+    Quickshell.execDetached([root.helper, plan.mode, plan.url, plan.title, plan.name, Model.clean(text), String(root.typeDelay), String(root.uploadDelay)].concat(pictures))
   }
 
   // ── dictation ───────────────────────────────────────────────────────
@@ -213,10 +266,13 @@ Item {
         history: root.history
         listening: root.listening
         dictationReady: root.dictationReady
+        pictures: root.pictures
 
         onAsk: function(id, text) { root.ask(id, text) }
         onPickProvider: function(id) { root.providerId = id; root.save() }
         onToggleDictation: root.toggleDictation()
+        onPasteRequested: root.pastePicture()
+        onRemovePicture: function(path) { root.removePicture(path) }
         onCloseRequested: root.close()
         onActiveFocusChanged: if (activeFocus) card.focusField()
 
@@ -230,6 +286,9 @@ Item {
       }
     }
   }
+
+  // Pictures left over from before the shell (re)started are stale.
+  Component.onCompleted: Quickshell.execDetached([root.imageHelper, "clear"])
 
   onOpenChanged: {
     if (open) {

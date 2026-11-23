@@ -1,0 +1,94 @@
+#!/bin/bash
+# Pictures for the bar's assistant (modules/OmabarAsk.qml).
+#
+#   omabar-ask-image grab        save the picture on the clipboard, print its path
+#   omabar-ask-image drop <path> forget one saved picture
+#   omabar-ask-image clear       forget them all
+#
+# "grab" takes a screenshot or photo copied as an image (image/png, jpeg, webp
+# or gif), or a picture file copied in a file manager. It exits 1, printing
+# nothing, when the clipboard holds no picture, so the box pastes text instead.
+#
+# Pictures are kept in $XDG_RUNTIME_DIR/omabar-ask (private to you, and gone
+# when you log out) until bin/omabar-ask has handed them to the chat site.
+
+dir=${OMABAR_ASK_IMAGES:-${XDG_RUNTIME_DIR:-$HOME/.cache}/omabar-ask}
+
+ours() {
+  local path
+  path=$(realpath -m -- "$1" 2>/dev/null) || return 1
+  [[ $path == "$(realpath -m -- "$dir")"/* ]]
+}
+
+ext_for() {
+  case $1 in
+    image/png) echo png ;;
+    image/jpeg | image/jpg) echo jpg ;;
+    image/webp) echo webp ;;
+    image/gif) echo gif ;;
+    *) return 1 ;;
+  esac
+}
+
+new_path() {
+  (umask 077 && mkdir -p "$dir") || exit 1
+  printf "%s/paste-%s-%s.%s" "$dir" "$(date +%Y%m%d-%H%M%S)" "$RANDOM" "$1"
+}
+
+grab() {
+  local types type ext out uri file
+  types=$(wl-paste --list-types 2>/dev/null) || exit 1
+
+  # A copied image: take the first kind a chat site understands.
+  for type in image/png image/jpeg image/jpg image/webp image/gif; do
+    if grep -qx "$type" <<<"$types"; then
+      ext=$(ext_for "$type")
+      out=$(new_path "$ext")
+      if (umask 077 && wl-paste --no-newline --type "$type" >"$out") && [[ -s $out ]]; then
+        echo "$out"
+        exit 0
+      fi
+      rm -f -- "$out"
+      exit 1
+    fi
+  done
+
+  # A picture file copied in a file manager.
+  if grep -qx "text/uri-list" <<<"$types"; then
+    while IFS= read -r uri; do
+      uri=${uri%$'\r'}
+      [[ $uri == file://* ]] || continue
+      file=${uri#file://}
+      file=/${file#*/}            # drop a host name, if any
+      file=$(printf '%b' "${file//%/\\x}")  # undo %20 and the like
+      [[ -f $file ]] || continue
+      case ${file,,} in
+        *.png) ext=png ;;
+        *.jpg | *.jpeg) ext=jpg ;;
+        *.webp) ext=webp ;;
+        *.gif) ext=gif ;;
+        *) continue ;;
+      esac
+      out=$(new_path "$ext")
+      if (umask 077 && cp -- "$file" "$out"); then
+        echo "$out"
+        exit 0
+      fi
+    done < <(wl-paste --no-newline --type text/uri-list 2>/dev/null)
+  fi
+  exit 1
+}
+
+case $1 in
+  grab) grab ;;
+  drop)
+    ours "$2" && rm -f -- "$2"
+    ;;
+  clear)
+    [[ -d $dir ]] && find "$dir" -maxdepth 1 -type f -name 'paste-*' -delete
+    ;;
+  *)
+    echo "Usage: omabar-ask-image grab | drop <path> | clear" >&2
+    exit 1
+    ;;
+esac
