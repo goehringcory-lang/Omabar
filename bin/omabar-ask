@@ -1,14 +1,20 @@
 #!/bin/bash
 # Asks a chat site a question for the bar's assistant (modules/OmabarAsk.qml).
 #
-#   omabar-ask <mode> <url> <title> <name> <question> [settle-ms]
+#   omabar-ask <mode> <url> <title> <name> <question> [settle-ms] [upload-ms] [picture...]
 #
 # Opens <url> in the default browser, then, for sites with no link that sends
 # a question by itself, asks it the way you would:
 #   link   the link sends the question; nothing more to do (ChatGPT, Grok)
 #   enter  the link fills the question in; press Enter (Claude)
 #   paste  paste the question into the chat box and press Enter (Gemini,
-#          Claude Duet, ChatGPT Dot, and any question too long for a link)
+#          Claude Duet, ChatGPT Dot, any question too long for a link, and
+#          any question with pictures)
+#
+# Pictures (screenshots or photos pasted into the box, saved by
+# bin/omabar-ask-image) are pasted into the chat box one by one before the
+# question, then the site gets [upload-ms] (default 3000) to upload them
+# before Enter is pressed. Once asked, the saved pictures are removed.
 #
 # Keys are only sent once the focused window's title names the site (<title>,
 # e.g. "Gemini") and the page has had [settle-ms] (default 2500) to load, so
@@ -21,20 +27,63 @@ title=$3
 name=$4
 question=$5
 settle_ms=${6:-2500}
+upload_ms=${7:-3000}
+pictures=("${@:8}")
 
-if [[ -z $url || -z $question ]]; then
-  echo "Usage: omabar-ask <link|enter|paste> <url> <title> <name> <question> [settle-ms]" >&2
+# Only pictures that are really there.
+kept=()
+for picture in "${pictures[@]}"; do
+  [[ -f $picture && -s $picture ]] && kept+=("$picture")
+done
+pictures=("${kept[@]}")
+
+if [[ -z $url || (-z $question && ${#pictures[@]} -eq 0) ]]; then
+  echo "Usage: omabar-ask <link|enter|paste> <url> <title> <name> <question> [settle-ms] [upload-ms] [picture...]" >&2
   exit 1
 fi
 [[ $settle_ms =~ ^[0-9]+$ ]] || settle_ms=2500
+[[ $upload_ms =~ ^[0-9]+$ ]] || upload_ms=3000
+# Pictures can only be pasted in.
+((${#pictures[@]})) && mode=paste
 
 notify() {
   omarchy-notification-send -g $'\U000F0674' "$1" "$2" 2>/dev/null || notify-send "$1" "$2" 2>/dev/null || true
 }
 
+seconds() {
+  printf "%d.%03d" $(($1 / 1000)) $(($1 % 1000))
+}
+
+mime_for() {
+  case ${1,,} in
+    *.jpg | *.jpeg) echo image/jpeg ;;
+    *.webp) echo image/webp ;;
+    *.gif) echo image/gif ;;
+    *) echo image/png ;;
+  esac
+}
+
 leave_on_clipboard() {
+  if ((${#pictures[@]})); then
+    # The pictures stay where they were saved, so they can be added by hand.
+    if [[ -n $question ]]; then
+      printf "%s" "$question" | wl-copy
+      notify "Question copied for $name" "$1 Paste it with Ctrl+V, then add your pictures from ${pictures[0]%/*}."
+    else
+      wl-copy --type "$(mime_for "${pictures[0]}")" <"${pictures[0]}"
+      notify "Picture copied for $name" "$1 Paste it with Ctrl+V."
+    fi
+    return
+  fi
   printf "%s" "$question" | wl-copy
   notify "Question copied for $name" "$1 Paste it with Ctrl+V."
+}
+
+forget_pictures() {
+  local picture
+  for picture in "${pictures[@]}"; do
+    "${BASH_SOURCE[0]%/*}/omabar-ask-image" drop "$picture" 2>/dev/null || true
+  done
 }
 
 focused_title() {
@@ -72,7 +121,7 @@ if ! site_focused; then
 fi
 
 # Let the page finish loading and put the cursor in its chat box.
-sleep "$(printf "%d.%03d" $((settle_ms / 1000)) $((settle_ms % 1000)))"
+sleep "$(seconds "$settle_ms")"
 
 if ! site_focused; then
   # You switched away while it loaded; never type into another window.
@@ -81,22 +130,47 @@ if ! site_focused; then
 fi
 
 if [[ $mode == "paste" ]]; then
-  # Borrow the clipboard for the paste and give back what was on it.
-  saved=""
-  had_text=0
-  if wl-paste --list-types 2>/dev/null | grep -q "^text/plain"; then
-    saved=$(wl-paste --no-newline 2>/dev/null)
-    had_text=1
+  # Borrow the clipboard for the paste and give back what was on it,
+  # text or picture.
+  saved_type=$(wl-paste --list-types 2>/dev/null | grep -m1 -E '^(text/plain|image/(png|jpeg|webp|gif))' || true)
+  saved=$(mktemp "${TMPDIR:-/tmp}/omabar-clip.XXXXXX")
+  chmod 600 "$saved"
+  [[ -n $saved_type ]] && wl-paste --no-newline --type "$saved_type" >"$saved" 2>/dev/null
+
+  for picture in "${pictures[@]}"; do
+    wl-copy --type "$(mime_for "$picture")" <"$picture"
+    sleep 0.2
+    if ! site_focused; then break; fi
+    wtype -M ctrl -k v -m ctrl
+    sleep 0.8
+  done
+  if [[ -n $question ]] && site_focused; then
+    printf "%s" "$question" | wl-copy
+    sleep 0.15
+    wtype -M ctrl -k v -m ctrl
   fi
-  printf "%s" "$question" | wl-copy
-  sleep 0.15
-  wtype -M ctrl -k v -m ctrl
-  sleep 0.4
-  wtype -k Return
+  if ((${#pictures[@]})); then
+    # Give the site time to upload the pictures; Enter does nothing until
+    # they are in.
+    sleep "$(seconds "$upload_ms")"
+  else
+    sleep 0.4
+  fi
+  if site_focused; then
+    wtype -k Return
+  else
+    notify "Not sent to $name" "You switched windows, so it was filled in but not sent. Press Enter there to ask."
+  fi
   sleep 0.5
-  if ((had_text)); then
-    printf "%s" "$saved" | wl-copy
+  if [[ -n $saved_type ]]; then
+    if [[ $saved_type == text/plain* ]]; then
+      wl-copy <"$saved"
+    else
+      wl-copy --type "$saved_type" <"$saved"
+    fi
   fi
+  rm -f -- "$saved"
+  forget_pictures
 else
   wtype -k Return
 fi

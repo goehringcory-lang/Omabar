@@ -24,6 +24,10 @@ var PROVIDERS = [
   { id: "dot",     name: "Dot",     full: "ChatGPT Dot", prefill: "",                         home: "https://chatgpt.com/",          sends: false, title: "ChatGPT" }
 ]
 
+// How many pictures one question can carry. Every site takes at least this
+// many in one message.
+var MAX_PICTURES = 4
+
 // Links longer than this go wrong on some sites (cut short, or refused), so a
 // longer question is pasted in instead.
 var MAX_LINK = 6000
@@ -60,19 +64,34 @@ function clean(text) {
 // { url, mode, title, name } for bin/omabar-ask: open `url`, then
 //   "link"  - nothing more (the link asks it)
 //   "enter" - press Enter (the link filled it in)
-//   "paste" - paste the question into the chat box and press Enter
+//   "paste" - paste the question (and any pictures) into the chat box and
+//             press Enter
 // `links` (optional, from the bar setting) maps an id to the page to open for
 // it instead of the usual one, e.g. { duet: "https://claude.ai/…" }.
-function plan(id, text, links) {
+// `pictures` is how many pictures go with it; a picture can't travel in a
+// link, so a question with pictures is always pasted in, and a picture on its
+// own (no text) is a question too.
+function plan(id, text, links, pictures) {
   var p = provider(id)
   var own = links && typeof links === "object" && typeof links[p.id] === "string" && /^https:\/\//.test(links[p.id]) ? links[p.id] : ""
   var question = clean(text)
-  if (!question) return null
-  if (p.prefill && !own) {
+  var withPictures = Number(pictures) > 0
+  if (!question && !withPictures) return null
+  if (p.prefill && !own && !withPictures) {
     var url = p.prefill + encodeURIComponent(question)
     if (url.length <= MAX_LINK) return { url: url, mode: p.sends ? "link" : "enter", title: p.title, name: p.full }
   }
   return { url: own || p.home, mode: "paste", title: p.title, name: p.full }
+}
+
+// Adds a pasted picture's path to the list, up to MAX_PICTURES, without
+// repeats. Returns the new list.
+function addPicture(list, path) {
+  var out = Array.isArray(list) ? list.slice() : []
+  path = String(path || "").trim()
+  if (!path || out.indexOf(path) !== -1 || out.length >= MAX_PICTURES) return out
+  out.push(path)
+  return out
 }
 
 // Keeps the last few questions, newest first, without repeats.
@@ -87,5 +106,5 @@ function remember(history, text, keep) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { PROVIDERS: PROVIDERS, provider: provider, providerIds: providerIds, shown: shown, clean: clean, plan: plan, remember: remember }
+  module.exports = { PROVIDERS: PROVIDERS, MAX_PICTURES: MAX_PICTURES, addPicture: addPicture, provider: provider, providerIds: providerIds, shown: shown, clean: clean, plan: plan, remember: remember }
 }
