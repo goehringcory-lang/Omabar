@@ -14,9 +14,10 @@
 #
 # Layout
 #   left    Omarchy menu (accent tile), workspace dots with a water-drop switch
-#   center  quick indicators, Ask box, Spotify mini player, split-flap clock
-#   (the world clock, restyled with split-flap times, omaplug, the plugin
-#    manager, and weather sit just right of the clock)
+#   center  quick indicators, weather with the moon phase, Ask box, Spotify
+#           mini player, split-flap clock (the world clock, restyled with
+#           split-flap times, and omaplug, the plugin manager, sit just right
+#           of the clock)
 #   right   the hover drawer handle (always leftmost), AI usage (Omarchy
 #           agents, plus ai-usagebar when installed), notifications,
 #           Thunderbird mail, Omarchy settings, and battery. The drawer holds every other plugin widget
@@ -509,6 +510,9 @@ jq -S \
         { id: "omarchy.indicators" }
       ],
       center: [
+        # Weather, with the moon phase beside it, leads the center group and
+        # always shows: a placeholder icon stands in until the forecast loads.
+        { id: "omabar-weather", type: "qml", source: ($dir + "/modules/OmabarWeather.qml") },
         { id: "omabar-ask", type: "qml", source: ($dir + "/modules/OmabarAsk.qml") },
         { id: "omabar-player", type: "qml", source: ($dir + "/modules/OmabarPlayer.qml"), player: "spotify", maxWidth: 220 },
         { id: "omabar-clock", type: "qml", source: ($dir + "/modules/OmabarClock.qml") },
@@ -518,10 +522,7 @@ jq -S \
       centerEnd: (
         [ { id: $elsewhen } ]
         + ($omaplug | map({ id: . }))
-        + [
-            { id: "omabar-weather", type: "qml", source: ($dir + "/modules/OmabarWeather.qml") },
-            { id: "omarchy.system-update" }
-          ]
+        + [ { id: "omarchy.system-update" } ]
       ),
       # Always in view: AI usage, notifications, mail, settings, battery. The rest
       # waits in the hover drawer (tray).

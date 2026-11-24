@@ -1,5 +1,8 @@
-// Omabar weather: current condition and temperature from weather.gov (NWS)
-// right beside the clock and plugin manager. Click opens a 5-day forecast
+// Omabar weather: current condition and temperature from weather.gov (NWS),
+// with tonight's moon phase beside them, at the start of the center group. It
+// always shows: until a forecast has loaded (or when weather.gov can't be
+// reached and nothing is saved) a cloud and a dash hold its place, and the
+// moon needs no network at all. Click opens a 5-day forecast
 // drop-down (staying right in the bar instead of opening a browser);
 // right-click refreshes the forecast.
 //
@@ -11,6 +14,9 @@
 //   units    - "F" or "C" (default "F")
 //   radarUrl - radar link to open (defaults to the location's weather.gov radar)
 //   twelveHour - "Updated" time as 9:30 AM (default true) or 09:30 (false)
+//   showMoon   - the moon phase disc after the temperature (default true)
+//   hemisphere - "north" or "south": which side the waxing moon is lit on
+//                (default "north")
 import QtQuick
 import Quickshell
 import Quickshell.Io
@@ -39,6 +45,14 @@ Item {
   readonly property string units: String(setting("units", "F")).toUpperCase() === "C" ? "C" : "F"
   readonly property string defaultRadarUrl: "https://radar.weather.gov/station/khnx/standard"
   readonly property string configuredRadarUrl: String(setting("radarUrl", "")).trim()
+  readonly property bool showMoon: setting("showMoon", true) !== false
+  readonly property bool southern: String(setting("hemisphere", "north")).toLowerCase() === "south"
+
+  // Ticks once a minute for the moon (which itself only redraws every ten).
+  SystemClock {
+    id: clock
+    precision: SystemClock.Minutes
+  }
 
   readonly property bool vertical: bar ? bar.vertical : false
   readonly property int barSize: bar ? bar.barSize : 34
@@ -184,13 +198,15 @@ Item {
     return lines.join("\n")
   }
 
-  readonly property bool tooltipHovered: hover.hovered
+  // The moon has its own tooltip, so the weather's steps aside over it.
+  readonly property bool tooltipHovered: hover.hovered && !(moonH.visible && moonH.tooltipHovered)
   function syncTooltip() {
     if (!bar || typeof bar.showTooltip !== "function") return
-    if (hover.hovered && !forecastOpen && tooltipText !== "") bar.showTooltip(root, tooltipText)
+    if (tooltipHovered && !forecastOpen && tooltipText !== "") bar.showTooltip(root, tooltipText)
     else bar.hideTooltip(root)
   }
-  onTooltipTextChanged: if (hover.hovered) syncTooltip()
+  onTooltipTextChanged: if (tooltipHovered) syncTooltip()
+  onTooltipHoveredChanged: syncTooltip()
 
   implicitWidth: vertical ? barSize : pill.implicitWidth + Style.space(2)
   implicitHeight: vertical ? pill.implicitHeight + Style.space(4) : barSize
@@ -232,6 +248,21 @@ Item {
         font.family: root.fontName
         font.pixelSize: Style.font.bodySmall
       }
+
+      OmabarMoon {
+        id: moonH
+        visible: root.showMoon
+        anchors.verticalCenter: parent.verticalCenter
+        width: diameter + Style.space(2)
+        height: root.barSize
+        bar: root.bar
+        when: clock.date
+        ink: root.ink
+        accent: root.accent
+        south: root.southern
+        twelveHour: root.twelveHour
+        suppressTooltip: root.forecastOpen
+      }
     }
 
     Column {
@@ -257,6 +288,18 @@ Item {
         opacity: root.current ? 0.92 : 0.55
         font.family: root.fontName
         font.pixelSize: Style.font.caption
+      }
+
+      OmabarMoon {
+        visible: root.showMoon
+        anchors.horizontalCenter: parent.horizontalCenter
+        bar: root.bar
+        when: clock.date
+        ink: root.ink
+        accent: root.accent
+        south: root.southern
+        twelveHour: root.twelveHour
+        suppressTooltip: root.forecastOpen
       }
     }
   }
