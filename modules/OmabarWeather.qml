@@ -239,29 +239,37 @@ Item {
         Behavior on color { ColorAnimation { duration: Style.duration(150) } }
       }
 
-      Text {
+      // The temperature and the moon sit closer together than the icon,
+      // so the small disc reads as part of the reading, not a new item.
+      Row {
         anchors.verticalCenter: parent.verticalCenter
-        text: root.barTemp
-        textFormat: Text.PlainText
-        color: root.ink
-        opacity: root.current ? 0.92 : 0.55
-        font.family: root.fontName
-        font.pixelSize: Style.font.bodySmall
-      }
+        spacing: Style.space(3)
 
-      OmabarMoon {
-        id: moonH
-        visible: root.showMoon
-        anchors.verticalCenter: parent.verticalCenter
-        width: diameter + Style.space(2)
-        height: root.barSize
-        bar: root.bar
-        when: clock.date
-        ink: root.ink
-        accent: root.accent
-        south: root.southern
-        twelveHour: root.twelveHour
-        suppressTooltip: root.forecastOpen
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          text: root.barTemp
+          textFormat: Text.PlainText
+          color: root.ink
+          opacity: root.current ? 0.92 : 0.55
+          font.family: root.fontName
+          font.pixelSize: Style.font.bodySmall
+        }
+
+        OmabarMoon {
+          id: moonH
+          visible: root.showMoon
+          anchors.verticalCenter: parent.verticalCenter
+          diameter: 7
+          width: diameter
+          height: root.barSize
+          bar: root.bar
+          when: clock.date
+          ink: root.ink
+          accent: root.accent
+          south: root.southern
+          twelveHour: root.twelveHour
+          suppressTooltip: root.forecastOpen
+        }
       }
     }
 
@@ -292,6 +300,7 @@ Item {
 
       OmabarMoon {
         visible: root.showMoon
+        diameter: 7
         anchors.horizontalCenter: parent.horizontalCenter
         bar: root.bar
         when: clock.date
