@@ -3,9 +3,17 @@
 
     omabar-keep connect
         One-time setup in a terminal. Google has no Keep API for personal
-        Gmail accounts, so this signs in the way Keep's Android app does:
-        you sign in to Google in your browser, copy one cookie, and paste it
-        here. It is traded for a Keep token, stored in your keyring.
+        Gmail accounts, so this signs in the way Keep's Android app does. A
+        browser window opens on Google's sign-in page; sign in and click
+        "I agree", and the rest happens on its own: the one-time sign-in
+        code Google hands the browser is traded for a Keep token, stored in
+        your keyring, and the window closes. It uses a fresh, throwaway
+        browser profile (Chromium, Chrome, Brave, Vivaldi or Edge), deleted
+        afterwards.
+    omabar-keep connect --paste
+        The manual way, for Firefox or if the window above won't sign in:
+        copy the oauth_token cookie from the browser's developer tools and
+        paste it.
     omabar-keep disconnect
         Forget the account: removes the token from your keyring and the
         cached notes.
@@ -24,17 +32,24 @@ this computer's device id. Synced notes are cached in ~/.cache/omabar/,
 readable only by you. The Keep library (gkeepapi) is installed into its own
 environment in ~/.local/share/omabar/keep-venv the first time you connect.
 """
+import base64
 import contextlib
 import fcntl
 import getpass
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
+import socket
+import struct
 import subprocess
 import sys
+import tempfile
 import time
+import urllib.parse
+import urllib.request
 
 sys.dont_write_bytecode = True  # keep the plugin checkout clean
 
@@ -51,7 +66,11 @@ VENV = os.environ.get("OMABAR_KEEP_VENV") or os.path.join(DATA_DIR, "keep-venv")
 REQUIREMENTS = ["gkeepapi==0.17.1", "gpsoauth==3.0.1"]
 
 KEEP_URL = "https://keep.google.com/"
-SETUP_URL = "https://accounts.google.com/EmbeddedSetup"
+SETUP_URL = os.environ.get("OMABAR_KEEP_SETUP_URL") or "https://accounts.google.com/EmbeddedSetup"
+# Browsers that can be watched over the Chrome DevTools Protocol, first found wins.
+BROWSERS = ["chromium", "google-chrome-stable", "google-chrome", "brave", "brave-browser",
+            "vivaldi-stable", "vivaldi", "microsoft-edge-stable", "helium-browser"]
+SIGNIN_SECONDS = 600       # time to sign in (two-step codes, a phone prompt)
 SECRET_ATTRS = ["service", "omabar-keep"]
 SYNC_SECONDS = 45          # Google can hang a request; never leave the bar waiting
 MAX_ITEMS = 60             # list items sent per note
@@ -219,7 +238,7 @@ def worker(task):
             answer = gpsoauth.exchange_token(payload["email"], payload["oauth_token"], payload["device"])
             token = answer.get("Token", "")
             if token:
-                out = {"token": token}
+                out = {"token": token, "email": str(answer.get("Email") or "")}
             else:
                 detail = answer.get("ErrorDetail") or answer.get("Error") or "no token came back"
                 out = {"error": f"Google turned the cookie down ({detail}). Cookies work once and only for a few minutes; get a fresh one and try again."}
@@ -247,6 +266,202 @@ def worker(task):
     finally:
         signal.alarm(0)
     print(json.dumps(out))
+
+
+# ── one-click sign-in: watch a throwaway browser for Google's code ───────
+
+class DevTools:
+    """Just enough of a WebSocket client to talk to a browser's DevTools
+    endpoint on this computer (no extra packages)."""
+
+    def __init__(self, url, timeout=15):
+        parts = urllib.parse.urlparse(url)
+        self.sock = socket.create_connection((parts.hostname, parts.port), timeout=timeout)
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.sock.sendall((f"GET {parts.path} HTTP/1.1\r\nHost: {parts.hostname}:{parts.port}\r\n"
+                           f"Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+                           "Sec-WebSocket-Version: 13\r\n\r\n").encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise OSError("the browser closed the connection")
+            head += chunk
+        if b" 101 " not in head.split(b"\r\n", 1)[0]:
+            raise OSError("the browser refused the connection")
+        self.buffer = head.split(b"\r\n\r\n", 1)[1]
+        self.next_id = 0
+
+    def close(self):
+        with contextlib.suppress(OSError):
+            self.sock.close()
+
+    def _read(self, count):
+        while len(self.buffer) < count:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise OSError("the browser closed the connection")
+            self.buffer += chunk
+        data, self.buffer = self.buffer[:count], self.buffer[count:]
+        return data
+
+    def _send(self, opcode, payload):
+        mask = os.urandom(4)
+        size = len(payload)
+        if size < 126:
+            header = struct.pack("!BB", 0x80 | opcode, 0x80 | size)
+        elif size < 65536:
+            header = struct.pack("!BBH", 0x80 | opcode, 0x80 | 126, size)
+        else:
+            header = struct.pack("!BBQ", 0x80 | opcode, 0x80 | 127, size)
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        self.sock.sendall(header + mask + masked)
+
+    def _message(self):
+        parts = []
+        while True:
+            first, second = self._read(2)
+            size = second & 0x7F
+            if size == 126:
+                size = struct.unpack("!H", self._read(2))[0]
+            elif size == 127:
+                size = struct.unpack("!Q", self._read(8))[0]
+            mask = self._read(4) if second & 0x80 else b""
+            payload = self._read(size)
+            if mask:
+                payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            opcode = first & 0x0F
+            if opcode == 8:
+                raise OSError("the browser closed the connection")
+            if opcode == 9:
+                self._send(10, payload)
+                continue
+            if opcode in (0, 1, 2):
+                parts.append(payload)
+                if first & 0x80:
+                    return json.loads(b"".join(parts).decode("utf-8", "replace"))
+
+    def call(self, method, params=None):
+        self.next_id += 1
+        ask = self.next_id
+        self._send(1, json.dumps({"id": ask, "method": method, "params": params or {}}).encode())
+        while True:
+            message = self._message()
+            if message.get("id") == ask:
+                if "error" in message:
+                    raise OSError(message["error"].get("message", "DevTools error"))
+                return message.get("result", {})
+
+
+def find_browser():
+    chosen = os.environ.get("OMABAR_KEEP_BROWSER")
+    if chosen:
+        return shutil.which(chosen)
+    for name in BROWSERS:
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
+def free_port():
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+# Straight to the browser on this computer, never through a proxy.
+LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def devtools_json(port, path):
+    with LOCAL.open(f"http://127.0.0.1:{port}{path}", timeout=3) as answer:
+        return json.load(answer)
+
+
+def signin_cookie(cookies, host):
+    """The oauth_token Google sets on its sign-in site once you click I agree."""
+    for cookie in cookies:
+        domain = str(cookie.get("domain", "")).lstrip(".")
+        if cookie.get("name") == "oauth_token" and cookie.get("value") and (host == domain or host.endswith("." + domain)):
+            return str(cookie["value"])
+    return ""
+
+
+def signed_in_email(port, host):
+    """The account signed in to the throwaway browser, read the way Chromium
+    itself lists its Google accounts. "" when it can't be told."""
+    try:
+        pages = [page for page in devtools_json(port, "/json/list")
+                 if page.get("type") == "page" and host in str(page.get("url", ""))]
+        if not pages:
+            return ""
+        page = DevTools(pages[0]["webSocketDebuggerUrl"])
+        try:
+            result = page.call("Runtime.evaluate", {
+                "expression": "fetch('/ListAccounts?gpsia=1&source=ChromiumBrowser&json=standard',"
+                              "{credentials:'include'}).then(r => r.text())",
+                "awaitPromise": True, "returnByValue": True})
+        finally:
+            page.close()
+        text = str(result.get("result", {}).get("value", ""))
+    except (OSError, ValueError, KeyError):
+        return ""
+    found = re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text)
+    return found[0] if found else ""
+
+
+def browser_signin(say=print, timeout=SIGNIN_SECONDS):
+    """Open Google's sign-in page in a fresh browser profile and wait for the
+    one-time code it hands the browser. Returns (code, email, why-not)."""
+    browser = find_browser()
+    if not browser:
+        return "", "", "no Chromium-family browser was found"
+    host = urllib.parse.urlparse(SETUP_URL).hostname or "accounts.google.com"
+    profile = tempfile.mkdtemp(prefix="omabar-keep-")
+    port = free_port()
+    command = [browser, f"--user-data-dir={profile}", f"--remote-debugging-port={port}",
+               "--no-first-run", "--no-default-browser-check", "--disable-sync", "--new-window",
+               "--window-size=560,760"] + os.environ.get("OMABAR_KEEP_BROWSER_FLAGS", "").split() + [SETUP_URL]
+    process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    devtools = None
+    try:
+        deadline = time.time() + 30
+        while devtools is None:
+            if process.poll() is not None:
+                return "", "", "the browser closed before it opened Google's page (is it already running with this profile?)"
+            try:
+                devtools = DevTools(devtools_json(port, "/json/version")["webSocketDebuggerUrl"])
+            except (OSError, ValueError, KeyError):
+                if time.time() > deadline:
+                    return "", "", "the browser didn't open its DevTools port"
+                time.sleep(0.4)
+        say("Waiting for you to sign in…")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if process.poll() is not None:
+                return "", "", "the browser window was closed before sign-in finished"
+            try:
+                code = signin_cookie(devtools.call("Storage.getCookies").get("cookies", []), host)
+            except OSError:
+                return "", "", "the browser window was closed before sign-in finished"
+            if code:
+                return code, signed_in_email(port, host), ""
+            time.sleep(0.8)
+        return "", "", "sign-in took longer than 10 minutes"
+    finally:
+        if devtools:
+            with contextlib.suppress(OSError):
+                devtools.call("Browser.close")
+            devtools.close()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=5)
+        # The throwaway profile held your Google sign-in: it goes.
+        shutil.rmtree(profile, ignore_errors=True)
 
 
 # ── commands ──────────────────────────────────────────────────────────────
@@ -325,13 +540,28 @@ def cmd_open(url=KEEP_URL):
     open_url(url)
 
 
-def cmd_connect():
+def paste_code(email):
+    """The manual way: the user copies the oauth_token cookie themselves."""
+    print("\n1. Your browser is opening " + SETUP_URL)
+    print("   Sign in" + (" with " + email if email else "") + " and click \"I agree\". The page may keep")
+    print("   spinning after that; that's fine.")
+    print("2. Open the developer tools (F12), then:")
+    print("   Chromium/Chrome: Application > Cookies > https://accounts.google.com")
+    print("   Firefox:         Storage > Cookies > https://accounts.google.com")
+    print("3. Copy the value of the cookie named oauth_token (it starts with oauth2_4/).")
+    print("   It works once and only for a few minutes, so paste it right away.\n")
+    if not open_url(SETUP_URL):
+        print("   (Open that address yourself.)")
+    pasted = getpass.getpass("Paste oauth_token (hidden), or Enter to cancel: ").strip().strip('"')
+    return urllib.parse.unquote(pasted)
+
+
+def cmd_connect(manual=False):
     print("Omabar: connect Google Keep\n")
     print("Google has no Keep API for personal Gmail accounts, so Omabar signs in the")
-    print("way Keep's Android app does. You'll copy one sign-in cookie from your browser.")
-    print("It is traded for a Keep token that is kept in your keyring, not in a file.\n")
-    print("Heads-up: that token can read your Google account the way a phone signed in")
-    print("to it can. `omabar-keep disconnect` removes it, and changing your Google")
+    print("way Keep's Android app does. The Keep token it gets is kept in your keyring,")
+    print("not in a file. Like a phone signed in to your account, it can read your")
+    print("Google account; `omabar-keep disconnect` removes it, and changing your Google")
     print("password revokes it.\n")
 
     if not secret_tool():
@@ -342,38 +572,48 @@ def cmd_connect():
         sys.exit(f"Couldn't install the Keep library: {error}")
 
     previous = account() or {}
-    default = previous.get("email", "")
-    email = input(f"Your Google account email{' [' + default + ']' if default else ''}: ").strip() or default
-    if "@" not in email:
-        sys.exit("That doesn't look like an email address.")
-    device = previous.get("device") if previous.get("email") == email and previous.get("device") else secrets.token_hex(8)
-
-    print("\n1. Your browser is opening " + SETUP_URL)
-    print("   Sign in with " + email + " and click \"I agree\". The page may keep")
-    print("   spinning after that; that's fine.")
-    print("2. Open the developer tools (F12), then:")
-    print("   Chromium/Chrome: Application > Cookies > https://accounts.google.com")
-    print("   Firefox:         Storage > Cookies > https://accounts.google.com")
-    print("3. Copy the value of the cookie named oauth_token (it starts with oauth2_4/).")
-    print("   It works once and only for a few minutes, so paste it right away.\n")
-    if not open_url(SETUP_URL):
-        print("   (Open that address yourself.)")
+    email = ""
+    code = ""
+    if not manual and find_browser():
+        print("A browser window is opening on Google's sign-in page. Sign in there and")
+        print("click \"I agree\". That's all: this finishes and the window closes on its own.\n")
+        code, email, why = browser_signin()
+        if not code:
+            print(f"\nThat didn't finish ({why}).")
+            print("Falling back to the manual way.")
+    elif not manual:
+        print("No Chromium-family browser found, so this is the manual way.")
 
     while True:
-        pasted = getpass.getpass("Paste oauth_token (hidden), or Enter to cancel: ").strip().strip('"')
-        if not pasted:
-            sys.exit("Cancelled. Nothing was saved.")
-        if pasted.startswith("aas_et/"):
-            token = pasted  # already a Keep token (from another tool)
+        if not code:
+            if not email:
+                default = previous.get("email", "")
+                email = input(f"Your Google account email{' [' + default + ']' if default else ''}: ").strip() or default
+                if "@" not in email:
+                    sys.exit("That doesn't look like an email address.")
+            code = paste_code(email)
+            if not code:
+                sys.exit("Cancelled. Nothing was saved.")
+        email = email or previous.get("email", "")
+        device = previous.get("device") if previous.get("device") else secrets.token_hex(8)
+        if code.startswith("aas_et/"):
+            token = code  # already a Keep token (from another tool)
             break
-        print("Trading the cookie for a Keep token…")
-        answer = run_worker("exchange", {"email": email, "oauth_token": pasted, "device": device})
+        print("Signed in. Getting a Keep token…")
+        answer = run_worker("exchange", {"email": email, "oauth_token": code, "device": device})
         if answer.get("token"):
             token = answer["token"]
+            email = answer.get("email") or email
             break
         print(answer.get("error", "That didn't work.") + "\n")
+        code = ""  # each code works once: get a new one
 
-    print("Checking your pinned notes…")
+    if "@" not in email:
+        email = input("Your Google account email: ").strip()
+        if "@" not in email:
+            sys.exit("That doesn't look like an email address. Nothing was saved.")
+
+    print(f"Checking your pinned notes for {email}…")
     answer = run_worker("sync", {"email": email, "token": token, "device": device}, timeout=180)
     if "notes" not in answer:
         sys.exit(answer.get("error", "Keep didn't answer.") + "\nNothing was saved.")
@@ -413,7 +653,7 @@ def main(argv):
         cmd_open(argv[2] if len(argv) > 2 else KEEP_URL)
     elif command == "connect":
         try:
-            cmd_connect()
+            cmd_connect(manual="--paste" in argv[2:])
         except (KeyboardInterrupt, EOFError):
             print("\nCancelled. Nothing was saved.")
             sys.exit(130)

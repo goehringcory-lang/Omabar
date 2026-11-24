@@ -156,7 +156,7 @@ Item {
         Text {
           width: parent.width
           wrapMode: Text.WordWrap
-          text: "Google has no Keep API for personal accounts, so setup signs in the way Keep's phone app does. It takes one cookie from your browser and about two minutes. The token stays in your keyring."
+          text: "A browser window opens on Google's sign-in page. Sign in, click I agree, and Omabar finishes on its own. Your Keep token stays in your keyring."
           color: card.ink
           opacity: 0.65
           font.family: card.fontName
