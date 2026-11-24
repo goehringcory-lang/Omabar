@@ -10,7 +10,7 @@
 //   weekStart  - "sunday" or "monday" for the calendar's first column
 //                (default: what your system's region uses)
 //   showMoon   - a small disc after the date showing tonight's moon phase
-//                (default true)
+//                (default false: the moon now sits beside the weather)
 //   hemisphere - "north" or "south": which side the waxing moon is lit on
 //                (default "north")
 import QtQuick
@@ -32,7 +32,7 @@ Item {
 
   readonly property bool twelveHour: setting("twelveHour", true) !== false
   readonly property bool showDate: setting("showDate", true) !== false
-  readonly property bool showMoon: setting("showMoon", true) !== false
+  readonly property bool showMoon: setting("showMoon", false) === true
   readonly property bool southern: String(setting("hemisphere", "north")).toLowerCase() === "south"
   readonly property bool vertical: bar ? bar.vertical : false
   readonly property int barSize: bar ? bar.barSize : 34
