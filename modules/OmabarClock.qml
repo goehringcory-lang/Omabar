@@ -9,6 +9,10 @@
 //   showDate   - the date as quiet text beside the tiles (default true)
 //   weekStart  - "sunday" or "monday" for the calendar's first column
 //                (default: what your system's region uses)
+//   showMoon   - a small disc after the date showing tonight's moon phase
+//                (default true)
+//   hemisphere - "north" or "south": which side the waxing moon is lit on
+//                (default "north")
 import QtQuick
 import Quickshell
 import qs.Commons
@@ -28,6 +32,8 @@ Item {
 
   readonly property bool twelveHour: setting("twelveHour", true) !== false
   readonly property bool showDate: setting("showDate", true) !== false
+  readonly property bool showMoon: setting("showMoon", true) !== false
+  readonly property bool southern: String(setting("hemisphere", "north")).toLowerCase() === "south"
   readonly property bool vertical: bar ? bar.vertical : false
   readonly property int barSize: bar ? bar.barSize : 34
   readonly property color ink: bar ? bar.barForeground : Commons.Color.foreground
@@ -70,7 +76,9 @@ Item {
 
   readonly property int tileHeight: Math.round(barSize * 0.66)
 
-  implicitWidth: vertical ? barSize : board.implicitWidth + (dateLabel.visible ? dateLabel.implicitWidth + Style.space(10) : 0) + Style.space(8)
+  implicitWidth: vertical ? barSize : board.implicitWidth
+    + (dateLabel.visible ? dateLabel.implicitWidth + Style.space(10) : 0)
+    + (moon.visible ? moon.width + Style.space(8) : 0) + Style.space(8)
   implicitHeight: vertical ? board.implicitHeight + Style.space(8) : barSize
 
   OmabarFlapText {
@@ -95,6 +103,25 @@ Item {
     opacity: 0.55
     font.family: root.fontName
     font.pixelSize: Style.font.bodySmall
+  }
+
+  // The moon follows the date: "9:47 PM  Tue 24 Nov  ◐". As tall as the bar,
+  // so its tooltip lands below the bar; whole pixels keep the disc sharp.
+  OmabarMoon {
+    id: moon
+    visible: root.showMoon && !root.vertical
+    readonly property Item after: dateLabel.visible ? dateLabel : board
+    x: Math.round(after.x + after.width + Style.space(8))
+    y: 0
+    width: diameter + Style.space(4)
+    height: root.height
+    bar: root.bar
+    when: clock.date
+    ink: root.ink
+    accent: root.accent
+    south: root.southern
+    twelveHour: root.twelveHour
+    suppressTooltip: root.calendarOpen
   }
 
   property bool calendarOpen: false

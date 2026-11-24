@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Print how many unread messages sit in Thunderbird's inboxes, as JSON.
 
-    omabar-mail-unread            {"unread": 3, "inboxes": [{"account": ..., "unread": ..., "file": ...}]}
+    omabar-mail-unread            {"unread": 3, "installed": true, "inboxes": [{"account": ..., "unread": ..., "file": ...}]}
+
+"installed" is false when no Thunderbird profile or program is found, so the
+bar can hide its mail button instead of showing one that does nothing.
 
 Thunderbird keeps each folder's summary in a .msf file (Mozilla's Mork
 format); the folder's unread count is its "numNewMsgs" field, updated as mail
@@ -12,6 +15,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import sys
 
 HOME = os.path.expanduser("~")
@@ -68,13 +72,23 @@ def account_name(path):
     return os.path.basename(os.path.dirname(path))
 
 
+def installed():
+    if any(os.path.isdir(root) for root in PROFILE_ROOTS):
+        return True
+    return any(shutil.which(name) for name in ("thunderbird", "betterbird"))
+
+
 def main():
     inboxes = []
     for path in inbox_files():
         count = unread_in(path)
         if count is not None:
             inboxes.append({"account": account_name(path), "unread": count, "file": os.path.realpath(path)})
-    print(json.dumps({"unread": sum(i["unread"] for i in inboxes), "inboxes": inboxes}))
+    print(json.dumps({
+        "unread": sum(i["unread"] for i in inboxes),
+        "installed": bool(inboxes) or installed(),
+        "inboxes": inboxes,
+    }))
     return 0
 
 

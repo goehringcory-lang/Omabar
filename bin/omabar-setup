@@ -43,7 +43,7 @@ fail() {
 }
 
 usage() {
-  sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # Omabar's own settings, tokens, cache and Focus mode state. --uninstall
@@ -52,7 +52,7 @@ OMABAR_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omabar"
 OMABAR_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omabar"
 OMABAR_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omabar"
 # The world clock's cities, as `omabar-setup --world-clock` saved them last.
-WORLD_CLOCK_FILE="$HOME/.config/omabar/world-clock.json"
+WORLD_CLOCK_FILE="$OMABAR_CONFIG_DIR/world-clock.json"
 # The id of the world clock clone setup made, so --uninstall removes only
 # a clone Omabar created and leaves one you made yourself.
 ELSEWHEN_RECORD="$OMABAR_CONFIG_DIR/elsewhen-clone"
@@ -206,12 +206,13 @@ check_loaded() {
   case $active in
   true)
     echo "Omabar is on. Undo any time with: $PLUGIN_DIR/bin/omabar-setup --restore"
+    weather_tip
     ;;
   false)
     {
       echo "omabar-setup: the shell did not load Omabar and is showing the built-in bar instead."
       echo "What the shell logged:"
-      shell_log --since "$started" | grep -i -E 'omabar|bar option|falling back|\.qml' | tail -n 40
+      shell_log --since "$started" | grep -i -E 'omabar|bar option|falling back|\.qml' | tail -n 40 || true
       echo "Send that, plus the output of: $PLUGIN_DIR/bin/omabar-setup --doctor"
       echo "Your old layout: $PLUGIN_DIR/bin/omabar-setup --restore"
     } >&2
@@ -221,6 +222,16 @@ check_loaded() {
     echo "Omabar is set up, but the shell didn't say whether it loaded. Check with: $PLUGIN_DIR/bin/omabar-setup --doctor"
     ;;
   esac
+}
+
+# Weather starts on the author's home (Yosemite Valley) until a location is set.
+weather_tip() {
+  local placed
+  placed=$(jq -r '[ .bar.layout[]? | arrays | .[] | objects | select(.id == "omabar-weather") | select((.url // .lat // "") == "") ] | length' "$CONFIG_FILE" 2>/dev/null || echo 0)
+  if [[ $placed != 0 ]]; then
+    echo "Tip: weather shows Yosemite Valley until you set yours:"
+    echo "  omarchy bar set omabar-weather url \"https://forecast.weather.gov/MapClick.php?lat=<lat>&lon=<lon>\""
+  fi
 }
 
 doctor() {
@@ -246,11 +257,21 @@ doctor() {
   echo "== world clock"
   jq -c '[ .bar.layout[]? | arrays | .[] | objects | select(.id | test("elsewhen")) | {id, cities, zones} ]' "$CONFIG_FILE" 2>&1 || true
   echo "saved copy: $(jq -c . "$WORLD_CLOCK_FILE" 2>/dev/null || echo none)"
-  shell_log -b | grep -i -E 'elsewhen|updateEntryInline|persist' | tail -n 20
+  shell_log -b | grep -i -E 'elsewhen|updateEntryInline|persist' | tail -n 20 || true
+  echo "== helpers"
+  local tool
+  for tool in jq python3 busctl wtype wl-copy dbus-monitor notify-send omarchy-notification-send; do
+    printf '%s: %s\n' "$tool" "$(command -v "$tool" || echo missing)"
+  done
+  echo "manifest version: $(jq -r '.version // "?"' "$PLUGIN_DIR/manifest.json" 2>&1 || true)"
+  echo "spotify: $("$PLUGIN_DIR/bin/omabar-spotify" status 2>&1 | head -c 300 || true)"
+  echo "calendar: $("$PLUGIN_DIR/bin/omabar-gcal" status 2>&1 | head -c 300 || true)"
+  echo "mail: $("$PLUGIN_DIR/bin/omabar-mail-unread" 2>&1 | head -c 300 || true)"
+  echo "weather cache: $(ls "$OMABAR_CACHE_DIR" 2>/dev/null | grep -i weather | tr '\n' ' ' || true)"
   echo "== plugins"
   omarchy plugin list 2>&1 | grep -v -E '^omarchy\.' || true
   echo "== shell log (this boot)"
-  shell_log -b | grep -i -E 'omabar|bar option|falling back|shell\.json|plugin' | tail -n 60
+  shell_log -b | grep -i -E 'omabar|bar option|falling back|shell\.json|plugin' | tail -n 60 || true
 }
 
 # Put back the bar from before Omabar without touching anything else in

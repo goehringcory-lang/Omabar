@@ -17,6 +17,12 @@ Item {
   // Ink that reads on the accent color, as on the Omarchy button's tile.
   readonly property bool lightAccent: (0.2126 * accent.r + 0.7152 * accent.g + 0.0722 * accent.b) > 0.5
   readonly property color onAccent: lightAccent ? Qt.rgba(0.06, 0.06, 0.08, 0.92) : Qt.rgba(1, 1, 1, 0.95)
+  // Ink for a mark drawn on any color: dark on light calendar colors
+  // (Banana, Sage), white on the rest.
+  function inkOn(value) {
+    var c = Qt.lighter(value, 1.0)
+    return (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) > 0.6 ? Qt.rgba(0.06, 0.06, 0.08, 0.92) : Qt.rgba(1, 1, 1, 0.95)
+  }
 
   property bool connected: false
   property bool loading: false
@@ -471,7 +477,7 @@ Item {
                   anchors.centerIn: parent
                   visible: calRow.modelData.shown
                   text: "\u{F012C}"
-                  color: "white"
+                  color: card.inkOn(calRow.modelData.color)
                   font.family: card.fontName
                   font.pixelSize: Style.font.caption
                 }

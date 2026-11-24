@@ -1142,14 +1142,14 @@ Item {
               target: squashScale
               property: root.vertical ? "yScale" : "xScale"
               to: Math.max(0.65, 0.84 - cell.impactDrama * 0.14)
-              duration: 55
+              duration: Style.duration(55)
               easing.type: Easing.OutQuad
             }
             NumberAnimation {
               target: squashScale
               property: root.vertical ? "xScale" : "yScale"
               to: Math.min(1.66, 1.32 + cell.impactDrama * 0.26)
-              duration: 55
+              duration: Style.duration(55)
               easing.type: Easing.OutQuad
             }
           }
@@ -1158,14 +1158,14 @@ Item {
               target: squashScale
               property: root.vertical ? "yScale" : "xScale"
               to: Math.min(1.38, 1.18 + cell.impactDrama * 0.15)
-              duration: Math.round(85 + cell.impactDrama * 15)
+              duration: Style.duration(Math.round(85 + cell.impactDrama * 15))
               easing.type: Easing.OutQuad
             }
             NumberAnimation {
               target: squashScale
               property: root.vertical ? "xScale" : "yScale"
               to: Math.max(0.66, 0.76 - cell.impactDrama * 0.09)
-              duration: Math.round(85 + cell.impactDrama * 15)
+              duration: Style.duration(Math.round(85 + cell.impactDrama * 15))
               easing.type: Easing.OutQuad
             }
           }
@@ -1174,7 +1174,7 @@ Item {
               target: squashScale
               property: "xScale"
               to: 1
-              duration: Math.round(280 + cell.impactDrama * 90)
+              duration: Style.duration(Math.round(280 + cell.impactDrama * 90))
               easing.type: Easing.OutElastic
               easing.amplitude: 0.75 + cell.impactDrama * 0.35
               easing.period: 0.44
@@ -1183,7 +1183,7 @@ Item {
               target: squashScale
               property: "yScale"
               to: 1
-              duration: Math.round(280 + cell.impactDrama * 90)
+              duration: Style.duration(Math.round(280 + cell.impactDrama * 90))
               easing.type: Easing.OutElastic
               easing.amplitude: 0.75 + cell.impactDrama * 0.35
               easing.period: 0.44
@@ -1197,7 +1197,7 @@ Item {
           property: "surgeProgress"
           from: 0
           to: 1
-          duration: Math.round(260 + cell.impactDrama * 55)
+          duration: Style.duration(Math.round(260 + cell.impactDrama * 55))
           easing.type: Easing.OutCubic
         }
 

@@ -176,6 +176,15 @@ Item {
         }
 
         Text {
+          visible: menu.connected && !menu.loading && menu.error === "" && list.count === 0
+          text: "No playlists yet"
+          color: menu.ink
+          opacity: 0.55
+          font.family: menu.fontName
+          font.pixelSize: Style.font.bodySmall
+        }
+
+        Text {
           visible: !menu.loading && menu.error !== ""
           width: parent.width
           wrapMode: Text.WordWrap
