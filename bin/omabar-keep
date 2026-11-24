@@ -1,0 +1,427 @@
+#!/usr/bin/env python3
+"""Omabar's Google Keep helper: your pinned notes and lists in the drawer.
+
+    omabar-keep connect
+        One-time setup in a terminal. Google has no Keep API for personal
+        Gmail accounts, so this signs in the way Keep's Android app does:
+        you sign in to Google in your browser, copy one cookie, and paste it
+        here. It is traded for a Keep token, stored in your keyring.
+    omabar-keep disconnect
+        Forget the account: removes the token from your keyring and the
+        cached notes.
+    omabar-keep status
+        Print whether an account is connected, as JSON.
+    omabar-keep cached
+        Print the pinned notes from the last sync, as JSON (instant).
+    omabar-keep pinned
+        Sync with Google Keep and print your pinned notes and lists, as JSON.
+    omabar-keep open [url]
+        Open Google Keep (or one note) in your browser.
+
+The token lives only in your keyring (GNOME Keyring, through secret-tool),
+never in a file. ~/.config/omabar/keep.json holds just your email address and
+this computer's device id. Synced notes are cached in ~/.cache/omabar/,
+readable only by you. The Keep library (gkeepapi) is installed into its own
+environment in ~/.local/share/omabar/keep-venv the first time you connect.
+"""
+import contextlib
+import fcntl
+import getpass
+import json
+import os
+import secrets
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+sys.dont_write_bytecode = True  # keep the plugin checkout clean
+
+HOME = os.path.expanduser("~")
+CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config"), "omabar")
+CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(HOME, ".cache"), "omabar")
+DATA_DIR = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.join(HOME, ".local", "share"), "omabar")
+ACCOUNT_FILE = os.path.join(CONFIG_DIR, "keep.json")
+STATE_FILE = os.path.join(CACHE_DIR, "keep-state.json")     # gkeepapi's own dump, for quick syncs
+PINNED_FILE = os.path.join(CACHE_DIR, "keep-pinned.json")   # the last answer the bar got
+LOCK_FILE = os.path.join(CACHE_DIR, "keep.lock")
+VENV = os.environ.get("OMABAR_KEEP_VENV") or os.path.join(DATA_DIR, "keep-venv")
+# Known to work together (2026-11). gpsoauth 2+ drops the urllib3<2 pin.
+REQUIREMENTS = ["gkeepapi==0.17.1", "gpsoauth==3.0.1"]
+
+KEEP_URL = "https://keep.google.com/"
+SETUP_URL = "https://accounts.google.com/EmbeddedSetup"
+SECRET_ATTRS = ["service", "omabar-keep"]
+SYNC_SECONDS = 45          # Google can hang a request; never leave the bar waiting
+MAX_ITEMS = 60             # list items sent per note
+MAX_TEXT = 900             # characters of a note's text
+
+
+# ── storage ───────────────────────────────────────────────────────────────
+
+def read_json(path, fallback=None):
+    try:
+        with open(path) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return fallback
+
+
+def write_private(path, data):
+    """JSON readable only by you, replaced in one step so a reader never sees
+    half of it."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    partial = f"{path}.{os.getpid()}.tmp"
+    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        json.dump(data, handle)
+    os.replace(partial, path)
+
+
+def remove(path):
+    with contextlib.suppress(OSError):
+        os.remove(path)
+
+
+def account():
+    data = read_json(ACCOUNT_FILE, {})
+    return data if isinstance(data, dict) and data.get("email") else None
+
+
+# ── keyring ───────────────────────────────────────────────────────────────
+
+def secret_tool():
+    return shutil.which("secret-tool")
+
+
+def keyring_attrs(email):
+    return SECRET_ATTRS + ["account", email]
+
+
+def keyring_store(email, token):
+    tool = secret_tool()
+    if not tool:
+        raise RuntimeError("secret-tool is missing. Install it with: sudo pacman -S --needed libsecret gnome-keyring")
+    result = subprocess.run([tool, "store", "--label", f"Omabar Google Keep ({email})"] + keyring_attrs(email),
+                            input=token, text=True, capture_output=True, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError("Your keyring didn't take the token: " + (result.stderr.strip() or "no keyring is running")
+                           + ". Is gnome-keyring running and unlocked?")
+
+
+def keyring_lookup(email):
+    tool = secret_tool()
+    if not tool:
+        return ""
+    try:
+        result = subprocess.run([tool, "lookup"] + keyring_attrs(email), capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def keyring_clear(email):
+    tool = secret_tool()
+    if tool:
+        subprocess.run([tool, "clear"] + keyring_attrs(email), capture_output=True, timeout=20)
+
+
+# ── the Keep library's own environment ────────────────────────────────────
+
+def venv_python():
+    return os.path.join(VENV, "bin", "python")
+
+
+def venv_ready():
+    python = venv_python()
+    if not os.access(python, os.X_OK):
+        return False
+    probe = subprocess.run([python, "-I", "-c", "import gkeepapi, gpsoauth"], capture_output=True, timeout=60)
+    return probe.returncode == 0
+
+
+def ensure_venv(quiet=False):
+    if venv_ready():
+        return
+    say = (lambda *_: None) if quiet else print
+    say("Installing the Google Keep library (gkeepapi) for Omabar…")
+    subprocess.run([sys.executable, "-m", "venv", "--clear", VENV], check=True)
+    pip = [venv_python(), "-I", "-m", "pip", "install", "--disable-pip-version-check", "--quiet"]
+    subprocess.run(pip + ["--upgrade", "pip"], check=False)
+    subprocess.run(pip + REQUIREMENTS, check=True)
+    if not venv_ready():
+        raise RuntimeError("the Keep library didn't install; see the messages above")
+
+
+def run_worker(task, payload, timeout=SYNC_SECONDS + 15):
+    """Run one Keep task with the library's Python. The token goes in on
+    stdin, so it never shows in the process list."""
+    script = os.path.realpath(__file__)
+    try:
+        result = subprocess.run([venv_python(), "-I", script, "_worker", task], input=json.dumps(payload),
+                                capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"error": "Google Keep didn't answer in time."}
+    try:
+        return json.loads(result.stdout)
+    except ValueError:
+        tail = (result.stderr or "").strip().splitlines()
+        return {"error": "Keep sync failed" + (": " + tail[-1] if tail else ".")}
+
+
+# ── worker (runs inside the venv) ─────────────────────────────────────────
+
+def shape_note(node, max_items=MAX_ITEMS, max_text=MAX_TEXT):
+    """A pinned note or list as the bar draws it."""
+    kind = getattr(getattr(node, "type", None), "value", "NOTE")
+    note = {
+        "id": str(node.id),
+        "kind": "list" if kind == "LIST" else "note",
+        "title": str(node.title or ""),
+        "color": str(getattr(node.color, "value", node.color) or "DEFAULT"),
+        "url": KEEP_URL + "#" + ("LIST" if kind == "LIST" else "NOTE") + "/" + str(node.server_id or node.id),
+        "labels": sorted(str(label.name) for label in node.labels.all()) if hasattr(node, "labels") else [],
+    }
+    if note["kind"] == "list":
+        items = [item for item in node.items if not item.deleted and not item.trashed]
+        unchecked = [item for item in items if not item.checked]
+        checked = [item for item in items if item.checked]
+        note["items"] = [{"text": str(item.text or ""), "checked": bool(item.checked), "indented": bool(item.indented)}
+                         for item in (unchecked + checked)[:max_items]]
+        note["unchecked"] = len(unchecked)
+        note["checked"] = len(checked)
+    else:
+        text = str(node.text or "")
+        note["text"] = text if len(text) <= max_text else text[:max_text].rstrip() + "…"
+    return note
+
+
+def pinned_notes(keep):
+    nodes = [node for node in keep.find(pinned=True, archived=False, trashed=False) if not node.deleted]
+    # Keep shows pinned notes highest sort value first.
+    nodes.sort(key=lambda node: int(getattr(node, "sort", 0) or 0), reverse=True)
+    return [shape_note(node) for node in nodes]
+
+
+def worker(task):
+    payload = json.load(sys.stdin)
+    out = {}
+
+    def expire(*_):
+        raise TimeoutError("Google Keep didn't answer in time.")
+
+    signal.signal(signal.SIGALRM, expire)
+    signal.alarm(SYNC_SECONDS)
+    try:
+        if task == "exchange":
+            import gpsoauth
+            answer = gpsoauth.exchange_token(payload["email"], payload["oauth_token"], payload["device"])
+            token = answer.get("Token", "")
+            if token:
+                out = {"token": token}
+            else:
+                detail = answer.get("ErrorDetail") or answer.get("Error") or "no token came back"
+                out = {"error": f"Google turned the cookie down ({detail}). Cookies work once and only for a few minutes; get a fresh one and try again."}
+        elif task == "sync":
+            import gkeepapi
+            keep = gkeepapi.Keep()
+            state = read_json(STATE_FILE)
+            try:
+                keep.authenticate(payload["email"], payload["token"], state=state if isinstance(state, dict) else None,
+                                  device_id=payload["device"])
+            except gkeepapi.exception.LoginException as error:
+                out = {"error": f"Google signed Omabar out of Keep ({error}). Run omabar-keep connect again.", "signedOut": True}
+            else:
+                write_private(STATE_FILE, keep.dump())
+                out = {"notes": pinned_notes(keep)}
+        else:
+            out = {"error": f"unknown task {task}"}
+    except TimeoutError as error:
+        out = {"error": str(error)}
+    except Exception as error:  # noqa: BLE001 - the bar shows any failure as a message
+        offline = any(cls.__name__ in ("ConnectionError", "ProxyError", "Timeout", "SSLError")
+                      for cls in type(error).__mro__)
+        out = {"error": "Can't reach Google Keep. Are you online?" if offline
+               else f"Keep sync failed: {type(error).__name__}: {error}"[:300]}
+    finally:
+        signal.alarm(0)
+    print(json.dumps(out))
+
+
+# ── commands ──────────────────────────────────────────────────────────────
+
+def emit(data):
+    print(json.dumps(data))
+
+
+def cmd_status():
+    info = account()
+    emit({"connected": bool(info and keyring_lookup(info["email"])), "email": info["email"] if info else ""})
+
+
+def cmd_cached():
+    info = account()
+    cached = read_json(PINNED_FILE)
+    if not info or not isinstance(cached, dict):
+        emit({"connected": bool(info), "notes": [], "synced": 0, "cached": True})
+        return
+    cached.update(connected=True, cached=True)
+    emit(cached)
+
+
+@contextlib.contextmanager
+def sync_lock():
+    """One sync at a time (two monitors' bars, a click while the first runs)."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(LOCK_FILE, "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+def cmd_pinned():
+    info = account()
+    if not info:
+        emit({"connected": False, "notes": []})
+        return
+    token = keyring_lookup(info["email"])
+    if not token:
+        emit({"connected": False, "notes": [], "error": "No Keep token in your keyring. Run omabar-keep connect."})
+        return
+    if not venv_ready():
+        emit({"connected": True, "notes": [], "error": "The Keep library is missing. Run omabar-keep connect."})
+        return
+    with sync_lock():
+        # Another bar may have just synced; its answer is good enough.
+        recent = read_json(PINNED_FILE)
+        if isinstance(recent, dict) and 0 <= time.time() - recent.get("synced", 0) < 10:
+            recent["connected"] = True
+            emit(recent)
+            return
+        answer = run_worker("sync", {"email": info["email"], "token": token, "device": info["device"]})
+        if "notes" in answer:
+            data = {"notes": answer["notes"], "synced": time.time(), "email": info["email"]}
+            write_private(PINNED_FILE, data)
+            data["connected"] = True
+            emit(data)
+            return
+    # Failed: show what we had, with the reason.
+    cached = read_json(PINNED_FILE, {})
+    emit({"connected": not answer.get("signedOut"), "notes": cached.get("notes", []) if isinstance(cached, dict) else [],
+          "synced": cached.get("synced", 0) if isinstance(cached, dict) else 0, "error": answer.get("error", "Keep sync failed.")})
+
+
+def open_url(url):
+    for opener in (["omarchy-launch-browser", url], ["xdg-open", url]):
+        if shutil.which(opener[0]):
+            subprocess.Popen(opener, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            return True
+    return False
+
+
+def cmd_open(url=KEEP_URL):
+    if not url.startswith(KEEP_URL):
+        sys.exit("omabar-keep open: only Google Keep links")
+    open_url(url)
+
+
+def cmd_connect():
+    print("Omabar: connect Google Keep\n")
+    print("Google has no Keep API for personal Gmail accounts, so Omabar signs in the")
+    print("way Keep's Android app does. You'll copy one sign-in cookie from your browser.")
+    print("It is traded for a Keep token that is kept in your keyring, not in a file.\n")
+    print("Heads-up: that token can read your Google account the way a phone signed in")
+    print("to it can. `omabar-keep disconnect` removes it, and changing your Google")
+    print("password revokes it.\n")
+
+    if not secret_tool():
+        sys.exit("First install the keyring tools:  sudo pacman -S --needed libsecret gnome-keyring")
+    try:
+        ensure_venv()
+    except (RuntimeError, subprocess.CalledProcessError, OSError) as error:
+        sys.exit(f"Couldn't install the Keep library: {error}")
+
+    previous = account() or {}
+    default = previous.get("email", "")
+    email = input(f"Your Google account email{' [' + default + ']' if default else ''}: ").strip() or default
+    if "@" not in email:
+        sys.exit("That doesn't look like an email address.")
+    device = previous.get("device") if previous.get("email") == email and previous.get("device") else secrets.token_hex(8)
+
+    print("\n1. Your browser is opening " + SETUP_URL)
+    print("   Sign in with " + email + " and click \"I agree\". The page may keep")
+    print("   spinning after that; that's fine.")
+    print("2. Open the developer tools (F12), then:")
+    print("   Chromium/Chrome: Application > Cookies > https://accounts.google.com")
+    print("   Firefox:         Storage > Cookies > https://accounts.google.com")
+    print("3. Copy the value of the cookie named oauth_token (it starts with oauth2_4/).")
+    print("   It works once and only for a few minutes, so paste it right away.\n")
+    if not open_url(SETUP_URL):
+        print("   (Open that address yourself.)")
+
+    while True:
+        pasted = getpass.getpass("Paste oauth_token (hidden), or Enter to cancel: ").strip().strip('"')
+        if not pasted:
+            sys.exit("Cancelled. Nothing was saved.")
+        if pasted.startswith("aas_et/"):
+            token = pasted  # already a Keep token (from another tool)
+            break
+        print("Trading the cookie for a Keep token…")
+        answer = run_worker("exchange", {"email": email, "oauth_token": pasted, "device": device})
+        if answer.get("token"):
+            token = answer["token"]
+            break
+        print(answer.get("error", "That didn't work.") + "\n")
+
+    print("Checking your pinned notes…")
+    answer = run_worker("sync", {"email": email, "token": token, "device": device}, timeout=180)
+    if "notes" not in answer:
+        sys.exit(answer.get("error", "Keep didn't answer.") + "\nNothing was saved.")
+    try:
+        keyring_store(email, token)
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+        sys.exit(str(error))
+    if previous.get("email") and previous["email"] != email:
+        keyring_clear(previous["email"])
+    write_private(ACCOUNT_FILE, {"email": email, "device": device})
+    write_private(PINNED_FILE, {"notes": answer["notes"], "synced": time.time(), "email": email})
+    count = len(answer["notes"])
+    print(f"\nConnected. {count} pinned note{'s' if count != 1 else ''} found.")
+    print("Open the drawer on the bar and click Keep to see them.")
+
+
+def cmd_disconnect():
+    info = account()
+    if info:
+        keyring_clear(info["email"])
+    for path in (ACCOUNT_FILE, STATE_FILE, PINNED_FILE):
+        remove(path)
+    print("Google Keep disconnected. The token and cached notes are gone.")
+
+
+def main(argv):
+    command = argv[1] if len(argv) > 1 else "help"
+    if command == "_worker":
+        worker(argv[2])
+    elif command == "status":
+        cmd_status()
+    elif command == "cached":
+        cmd_cached()
+    elif command == "pinned":
+        cmd_pinned()
+    elif command == "open":
+        cmd_open(argv[2] if len(argv) > 2 else KEEP_URL)
+    elif command == "connect":
+        try:
+            cmd_connect()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled. Nothing was saved.")
+            sys.exit(130)
+    elif command == "disconnect":
+        cmd_disconnect()
+    else:
+        print(__doc__.strip())
+
+
+if __name__ == "__main__":
+    main(sys.argv)

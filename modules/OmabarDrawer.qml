@@ -145,7 +145,8 @@ Item {
     "omarchy.monitor": { icon: "\u{F0379}", label: "Display" },
     "omarchy.keyboard-layout": { icon: "\u{F030C}", label: "Keyboard" },
     "omarchy.microphone": { icon: "\u{F036C}", label: "Microphone" },
-    "omabar-omaland": { icon: "\u{F03D8}", label: "Omaland" }
+    "omabar-omaland": { icon: "\u{F03D8}", label: "Omaland" },
+    "omabar-keep": { icon: "\u{F06DC}", label: "Keep" }
   })
 
   function entryId(entry) {
