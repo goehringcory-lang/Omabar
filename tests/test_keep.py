@@ -22,7 +22,7 @@ ROOT = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")
 HELPER = os.path.join(ROOT, "bin", "omabar-keep")
 
 NOTES = [{"id": "a", "kind": "list", "title": "Groceries", "color": "YELLOW", "url": "https://keep.google.com/#LIST/a",
-          "labels": [], "items": [{"text": "Milk", "checked": False, "indented": False}], "unchecked": 1, "checked": 0}]
+          "labels": [], "items": [{"id": "m1", "text": "Milk", "checked": False, "indented": False}], "unchecked": 1, "checked": 0}]
 
 
 def load_helper():
@@ -85,9 +85,9 @@ class KeepHelperTest(unittest.TestCase):
         self.assertIn("omabar-keep connect", self.run_helper("help"))
 
     def test_nothing_connected(self):
-        self.assertEqual(json.loads(self.run_helper("status")), {"connected": False, "email": ""})
+        self.assertEqual(json.loads(self.run_helper("status")), {"connected": False, "email": "", "pending": 0})
         self.assertFalse(json.loads(self.run_helper("cached"))["connected"])
-        self.assertEqual(json.loads(self.run_helper("pinned")), {"connected": False, "notes": []})
+        self.assertEqual(json.loads(self.run_helper("pinned")), {"connected": False, "notes": [], "pending": 0, "conflicts": []})
 
     def test_token_missing_from_keyring(self):
         self.account()
@@ -155,6 +155,102 @@ class KeepHelperTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
 
 
+class EditQueueTest(KeepHelperTest):
+    """Edits: queued on disk, shown at once, sent with the next sync, kept
+    when the sync fails, and conflicts reported."""
+
+    def fake_sending_library(self, conflict_first=False):
+        # The venv's Python, standing in: marks every queued edit done (or
+        # the first one a conflict) and maps new items to real ids.
+        self.script(os.path.join(self.venv, "bin", "python"), textwrap.dedent(f"""\
+            #!{sys.executable}
+            import json, sys
+            if sys.argv[2] == "-c":
+                sys.exit(0)
+            payload = json.load(sys.stdin)
+            with open({self.log!r}, "a") as log:
+                log.write(json.dumps(payload["ops"]) + "\\n")
+            ops = payload["ops"]
+            conflicts = [{{"id": ops[0]["id"], "message": "changed in Keep"}}] if ops and {conflict_first!r} else []
+            done = [op["id"] for op in ops][1 if conflicts else 0:]
+            ids = {{op["local"]: "real-" + op["id"] for op in ops if op.get("local")}}
+            print(json.dumps({{"notes": {NOTES!r}, "done": done, "conflicts": conflicts, "ids": ids}}))
+            """))
+
+    def edit(self, **change):
+        return json.loads(self.run_helper("edit", json.dumps(change)))
+
+    def seed(self):
+        self.account()
+        self.fake_keyring("aas_et/secret-token")
+        self.fake_library({"notes": NOTES})
+        self.run_helper("pinned")
+
+    def test_edit_shows_at_once_and_queues(self):
+        self.seed()
+        data = self.edit(op="check", note="a", item=NOTES[0]["items"][0]["id"], checked=True)
+        self.assertEqual(data["pending"], 1)
+        self.assertTrue(data["notes"][0]["items"][0]["checked"])
+        self.assertEqual(data["notes"][0]["checked"], 1)
+        data = self.edit(op="addItem", note="a", text="Bread")
+        self.assertEqual(data["pending"], 2)
+        added = data["notes"][0]["items"][0]
+        self.assertEqual((added["text"], added["checked"]), ("Bread", False))
+        self.assertTrue(added["id"].startswith("local:"))
+        # Renaming the new item before it's sent changes the queued add.
+        data = self.edit(op="itemText", note="a", item=added["id"], before="Bread", after="Rye bread")
+        self.assertEqual(data["pending"], 2)
+        self.assertEqual(data["notes"][0]["items"][0]["text"], "Rye bread")
+        # Typing the same field twice is one edit.
+        self.edit(op="title", note="a", before="Groceries", after="Food")
+        data = self.edit(op="title", note="a", before="Food", after="Shopping")
+        self.assertEqual(data["pending"], 3)
+        self.assertEqual(data["notes"][0]["title"], "Shopping")
+        with open(os.path.join(self.home, ".cache", "omabar", "keep-pending.json")) as handle:
+            pending = json.load(handle)
+        title = [op for op in pending["ops"] if op["op"] == "title"][0]
+        self.assertEqual((title["before"], title["after"]), ("Groceries", "Shopping"))
+
+    def test_bad_edit_refused(self):
+        self.seed()
+        env = dict(os.environ, HOME=self.home, PATH=self.bin + ":/usr/bin:/bin", OMABAR_KEEP_VENV=self.venv)
+        result = subprocess.run([sys.executable, HELPER, "edit", '{"op": "rm -rf", "note": "a"}'], env=env,
+                                capture_output=True, text=True, timeout=20)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_sync_sends_and_clears(self):
+        self.seed()
+        self.edit(op="check", note="a", item="x", checked=True)
+        self.edit(op="addItem", note="a", text="Bread")
+        self.fake_sending_library()
+        data = json.loads(self.run_helper("pinned"))
+        self.assertEqual(data["pending"], 0)
+        self.assertEqual(data["conflicts"], [])
+        with open(self.log) as handle:
+            sent = json.loads(handle.read().strip().splitlines()[-1])
+        self.assertEqual([op["op"] for op in sent], ["check", "addItem"])
+
+    def test_conflict_reported_then_dismissed(self):
+        self.seed()
+        self.edit(op="itemText", note="a", item="x", before="Milk", after="Oat milk")
+        self.fake_sending_library(conflict_first=True)
+        data = json.loads(self.run_helper("pinned"))
+        self.assertEqual(data["pending"], 0)
+        self.assertEqual([c["message"] for c in data["conflicts"]], ["changed in Keep"])
+        self.assertEqual(json.loads(self.run_helper("cached"))["conflicts"][0]["message"], "changed in Keep")
+        self.assertEqual(json.loads(self.run_helper("dismiss"))["conflicts"], [])
+
+    def test_offline_keeps_edits(self):
+        self.seed()
+        self.edit(op="check", note="a", item=NOTES[0]["items"][0]["id"], checked=True)
+        self.fake_library({"error": "Google Keep is offline right now."})
+        data = json.loads(self.run_helper("pinned"))
+        self.assertEqual(data["pending"], 1)
+        self.assertIn("offline", data["error"])
+        self.assertTrue(data["notes"][0]["items"][0]["checked"])   # still shown ticked
+        self.assertEqual(json.loads(self.run_helper("status"))["pending"], 1)
+
+
 class ShapeNoteTest(unittest.TestCase):
     """Runs only where gkeepapi is installed (pip install gkeepapi)."""
 
@@ -187,6 +283,33 @@ class ShapeNoteTest(unittest.TestCase):
         self.assertTrue(shaped["Groceries"]["url"].startswith("https://keep.google.com/#LIST/"))
         self.assertEqual(shaped["Idea"]["kind"], "note")
         self.assertLessEqual(len(shaped["Idea"]["text"]), self.helper.MAX_TEXT + 1)
+
+    def test_apply_edits(self):
+        import time
+        keep = self.gkeepapi.Keep()
+        groceries = keep.createList("Groceries", [("Milk", False), ("Eggs", False)])
+        note = keep.createNote("Ideas", "hello")
+        items = {item.text: item.id for item in groceries.items}
+        ops = [
+            {"id": "1", "op": "check", "note": groceries.id, "item": items["Milk"], "checked": True},
+            {"id": "2", "op": "addItem", "note": groceries.id, "text": "Bread", "local": "local:b", "at": time.time()},
+            {"id": "3", "op": "check", "note": groceries.id, "item": "local:b", "checked": True},
+            {"id": "4", "op": "itemText", "note": groceries.id, "item": items["Eggs"], "before": "Eggs", "after": "Brown eggs"},
+            {"id": "5", "op": "noteText", "note": note.id, "before": "something else", "after": "mine"},
+            {"id": "6", "op": "deleteItem", "note": groceries.id, "item": "gone"},
+            {"id": "7", "op": "check", "note": "no-such-note", "item": "x", "checked": True},
+        ]
+        ids = {}
+        done, conflicts = self.helper.apply_ops(keep, ops, ids)
+        self.assertEqual(done, ["1", "2", "3", "4", "6"])
+        self.assertEqual([c["id"] for c in conflicts], ["5", "7"])
+        self.assertEqual(note.text, "hello")                       # Keep's version kept
+        texts = {item.text: item.checked for item in groceries.items}
+        self.assertEqual(texts, {"Milk": True, "Brown eggs": False, "Bread": True})
+        self.assertIn("local:b", ids)
+        # Sent again after a lost answer: Bread isn't added twice.
+        self.helper.apply_ops(keep, [ops[1]], {})
+        self.assertEqual(sum(1 for item in groceries.items if item.text == "Bread"), 1)
 
 
 class BrowserSigninTest(unittest.TestCase):

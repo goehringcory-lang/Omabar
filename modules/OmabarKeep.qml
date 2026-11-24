@@ -1,13 +1,15 @@
-// Omabar Keep: your pinned Google Keep notes and lists in a glass card.
+// Omabar Keep: your pinned Google Keep notes and lists in a glass card,
+// editable in place.
 //
 // It lives in the drawer (the layout's tray section): the drawer's Keep tile
 // calls open(), and the card drops below the drawer handle. Placed on the bar
 // itself instead, it is a Keep icon that opens the same card.
 //
 // bin/omabar-keep does the talking to Google. Opening the card shows the last
-// sync at once, then syncs again; nothing runs while the card is closed,
-// except one quiet sync a little after the shell starts so the first open
-// is already current.
+// sync at once, then syncs again. An edit is queued on disk the moment you
+// make it (so it survives closing the card, a restart or being offline) and
+// sent to Keep a moment later; edits that couldn't be sent are retried every
+// minute until they go through, card open or not.
 //
 // Settings (inline on the shell.json entry):
 //   itemsShown - open list items shown per list before "+ N more" (default 6)
@@ -33,29 +35,51 @@ Item {
   readonly property string helper: String(Qt.resolvedUrl("../bin/omabar-keep")).replace(/^file:\/\//, "")
   readonly property string fontName: bar && bar.fontFamily ? bar.fontFamily : "monospace"
 
+  // ── what the card shows ─────────────────────────────────────────────
+  property bool connected: false
+  property bool loaded: false
+  property bool loading: false
+  property string error: ""
+  property var notes: []
+  property real synced: 0
+  property int pending: 0
+  property var conflicts: []
+  property date now: new Date()
+
+  readonly property var card: panel.loadedContent
+  readonly property bool typing: !!card && card.typing
+  // A sync's answer that came back while you were typing; shown once you stop.
+  property var heldAnswer: null
+  onTypingChanged: if (!typing && heldAnswer) { var held = heldAnswer; heldAnswer = null; take(held, false) }
+
   property bool cardOpen: false
   function open() { cardOpen = true }
-  function close() { cardOpen = false }
-  function toggle() { cardOpen = !cardOpen }
+  function close() { if (card) card.leaveFields(); cardOpen = false }
+  function toggle() { if (cardOpen) close(); else open() }
 
   onCardOpenChanged: {
     if (!cardOpen) return
-    card.now = new Date()
+    root.now = new Date()
     run(["cached"], function(data) { if (data && !syncProc.running) take(data, true) })
     sync()
   }
 
   function take(data, fromCache) {
-    card.connected = data.connected === true
-    card.notes = Array.isArray(data.notes) ? data.notes : []
-    card.synced = Number(data.synced) || 0
-    if (!fromCache) card.error = String(data.error || "")
-    card.loaded = true
+    root.connected = data.connected === true
+    root.notes = Array.isArray(data.notes) ? data.notes : []
+    root.synced = Number(data.synced) || 0
+    root.pending = Number(data.pending) || 0
+    root.conflicts = Array.isArray(data.conflicts) ? data.conflicts : []
+    if (!fromCache) root.error = String(data.error || "")
+    root.loaded = true
   }
 
+  // ── syncing ─────────────────────────────────────────────────────────
+  property bool syncAgain: false
   function sync() {
-    if (syncProc.running) return
-    card.loading = true
+    if (syncProc.running) { syncAgain = true; return }
+    syncAgain = false
+    root.loading = true
     syncProc.running = true
   }
 
@@ -66,13 +90,45 @@ Item {
       onStreamFinished: {
         var data = null
         try { data = JSON.parse(text) } catch (e) {}
-        card.loading = false
-        card.now = new Date()
-        if (data) root.take(data, false)
-        else { card.error = "Couldn't reach Google Keep."; card.loaded = true }
+        root.loading = false
+        root.now = new Date()
+        if (!data) { root.error = "Couldn't reach Google Keep."; root.loaded = true }
+        else if (root.typing) root.heldAnswer = data
+        else root.take(data, false)
+        // Edits made while this sync ran go out now.
+        if (root.syncAgain || (data && !data.error && Number(data.pending) > 0)) sendSoon.restart()
       }
     }
-    onRunningChanged: if (!running) card.loading = false
+    onRunningChanged: if (!running) root.loading = false
+  }
+
+  // Edits go out shortly after the last one, so a burst of ticks is one sync.
+  Timer { id: sendSoon; interval: 1200; onTriggered: root.sync() }
+
+  // Anything that couldn't be sent (offline, Google hiccup) is retried.
+  Timer {
+    interval: 60000
+    repeat: true
+    running: root.pending > 0
+    onTriggered: if (!syncProc.running) root.sync()
+  }
+
+  function edit(change) {
+    run(["edit", JSON.stringify(change)], function(data) {
+      // Held while you type elsewhere, except a new item, whose list takes
+      // the keyboard straight back for the next one.
+      if (data && !data.error) {
+        if (root.typing && change.op !== "addItem") root.heldAnswer = data
+        else root.take(data, true)
+      }
+      else if (data && data.error) root.error = String(data.error)
+      sendSoon.restart()
+    })
+  }
+
+  function dismissConflicts() {
+    root.conflicts = []
+    run(["dismiss"], function() {})
   }
 
   function run(args, done) {
@@ -95,11 +151,15 @@ Item {
     }
   }
 
-  // Warm the cache once, after the shell has settled.
+  // After the shell starts: warm the cache, and send any edits left over.
   Timer {
     interval: 20000
     running: true
-    onTriggered: root.run(["status"], function(data) { if (data && data.connected) root.sync() })
+    onTriggered: root.run(["status"], function(data) {
+      if (!data || !data.connected) return
+      root.pending = Number(data.pending) || 0
+      root.sync()
+    })
   }
 
   // ── on the bar (when placed there rather than in the drawer) ────────
@@ -117,35 +177,48 @@ Item {
     onPressed: function(pressedButton) { root.toggle() }
   }
 
-  PopupCard {
-    id: popup
+  // A KeyboardPanel, not a PopupCard, so the card can take typing.
+  KeyboardPanel {
+    id: panel
     anchorItem: root
     bar: root.bar
     owner: root
     open: root.cardOpen
-    contentWidth: popup.fittedContentWidth(card.implicitWidth)
-    contentHeight: popup.fittedContentHeight(card.implicitHeight)
+    contentWidth: panel.fittedContentWidth(Style.space(360))
+    contentHeight: panel.fittedContentHeight(panel.loadedContentHeight)
+    focusTarget: panel.loadedContent
 
-    OmabarKeepCard {
-      id: card
-      anchors.fill: parent
-      ink: Commons.Color.popups.text
-      fontName: root.fontName
-      itemsShown: Math.max(1, Number(root.setting("itemsShown", 6)) || 6)
+    content: Component {
+      OmabarKeepCard {
+        ink: Commons.Color.popups.text
+        fontName: root.fontName
+        itemsShown: Math.max(1, Number(root.setting("itemsShown", 6)) || 6)
+        connected: root.connected
+        loaded: root.loaded
+        loading: root.loading
+        error: root.error
+        notes: root.notes
+        synced: root.synced
+        pending: root.pending
+        conflicts: root.conflicts
+        now: root.now
 
-      onOpenNote: function(url) {
-        root.close()
-        Quickshell.execDetached([root.helper, "open", url || "https://keep.google.com/"])
+        onEdit: function(change) { root.edit(change) }
+        onDismissConflicts: root.dismissConflicts()
+        onOpenNote: function(url) {
+          root.close()
+          Quickshell.execDetached([root.helper, "open", url || "https://keep.google.com/"])
+        }
+        onOpenKeep: {
+          root.close()
+          Quickshell.execDetached([root.helper, "open"])
+        }
+        onConnectRequested: {
+          root.close()
+          if (root.bar) root.bar.run("omarchy-launch-floating-terminal-with-presentation " + Util.shellQuote(Util.shellQuote(root.helper) + " connect"))
+        }
+        onRefreshRequested: root.sync()
       }
-      onOpenKeep: {
-        root.close()
-        Quickshell.execDetached([root.helper, "open"])
-      }
-      onConnectRequested: {
-        root.close()
-        if (root.bar) root.bar.run("omarchy-launch-floating-terminal-with-presentation " + Util.shellQuote(Util.shellQuote(root.helper) + " connect"))
-      }
-      onRefreshRequested: root.sync()
     }
   }
 }
