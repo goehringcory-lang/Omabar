@@ -23,7 +23,8 @@ Item {
   property bool twelveHour: true
   // While the clock's calendar is open the tooltip stays away.
   property bool suppressTooltip: false
-  // Kept even, so the disc's center falls on a pixel corner.
+  // A whole number of pixels, so the 1 px outline (drawn half a pixel in)
+  // lands on whole pixels. The clock uses 14; the weather pill uses 7.
   property int diameter: 14
 
   // The moon's elongation moves about half a degree an hour, so it is
