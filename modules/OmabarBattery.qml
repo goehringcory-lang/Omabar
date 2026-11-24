@@ -157,6 +157,8 @@ Item {
   }
   onPresentChanged: if (!present) cardOpen = false
 
+  // The bar only shows a tooltip for a target that says it is hovered.
+  readonly property bool tooltipHovered: hover.hovered
   function syncTooltip() {
     if (!bar || typeof bar.showTooltip !== "function") return
     if (hover.hovered && !cardOpen && tooltipText !== "") bar.showTooltip(root, tooltipText)

@@ -511,6 +511,8 @@ Item {
 
   readonly property string tooltipText: !active ? ""
     : title + (artist ? "\n" + artist : "") + (hasTrack && player.trackAlbum ? "\n" + player.trackAlbum : "")
+  // The bar only shows a tooltip for a target that says it is hovered.
+  readonly property bool tooltipHovered: wholeHover.hovered
   function syncTooltip() {
     if (!bar || typeof bar.showTooltip !== "function") return
     if (wholeHover.hovered && tooltipText !== "" && !menuOpen) bar.showTooltip(root, tooltipText)
