@@ -1,8 +1,10 @@
 // Omabar moon: a small disc after the clock's date, lit the way tonight's moon
 // is. The phase is worked out on this computer from the date (see
 // OmabarMoonModel.js); nothing is fetched. The lit part is drawn as vector
-// curves, so its edge stays smooth, and both sides take the theme's
-// foreground color, kept a step quieter than the clock.
+// curves, so its edge stays smooth. The lit part is solid in the theme's
+// accent color, like the clock's tiles; the dark part is left empty inside a
+// thin outline of the whole disc, so a crescent still shows the full moon's
+// round shape.
 // Hover it for the phase name, how much is lit, and when the next full or new
 // moon is.
 import QtQuick
@@ -16,12 +18,13 @@ Item {
   // The time to show; the clock passes its own minute-ticking date.
   property date when: new Date()
   property color ink: "white"
+  property color accent: "gold"
   property bool south: false
   property bool twelveHour: true
   // While the clock's calendar is open the tooltip stays away.
   property bool suppressTooltip: false
   // Kept even, so the disc's center falls on a pixel corner.
-  property int diameter: 12
+  property int diameter: 14
 
   // The moon's elongation moves about half a degree an hour, so it is
   // recomputed every ten minutes rather than every tick of the clock.
@@ -68,20 +71,21 @@ Item {
     y: Math.round((root.height - height) / 2)
     preferredRendererType: Shape.CurveRenderer
 
-    // The dark side: a faint full disc, no rim.
+    // The dark side: an empty disc with a thin outline, half a pixel in so
+    // the 1 px line sits on whole pixels.
     ShapePath {
-      fillColor: root.tint(0.20)
-      strokeColor: "transparent"
-      strokeWidth: 0
+      fillColor: root.tint(0.06)
+      strokeColor: root.tint(0.38)
+      strokeWidth: 1
       PathAngleArc {
         centerX: root.diameter / 2; centerY: root.diameter / 2
-        radiusX: root.diameter / 2; radiusY: root.diameter / 2
+        radiusX: root.diameter / 2 - 0.5; radiusY: root.diameter / 2 - 0.5
         startAngle: 0; sweepAngle: 360
       }
     }
 
     ShapePath {
-      fillColor: root.litPath === "" ? "transparent" : root.tint(0.80)
+      fillColor: root.litPath === "" ? "transparent" : root.accent
       strokeColor: "transparent"
       strokeWidth: 0
       PathSvg { path: root.litPath === "" ? "M 0 0" : root.litPath }
