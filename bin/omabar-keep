@@ -23,6 +23,20 @@
         Print the pinned notes from the last sync, as JSON (instant).
     omabar-keep pinned
         Sync with Google Keep and print your pinned notes and lists, as JSON.
+    omabar-keep edit '<json>'
+        Queue one change to a pinned note and print the notes with it
+        applied. The next `pinned` sends it to Keep. Changes:
+          {"op": "check", "note": id, "item": id, "checked": true}
+          {"op": "itemText", "note": id, "item": id, "before": s, "after": s}
+          {"op": "addItem", "note": id, "text": s}
+          {"op": "deleteItem", "note": id, "item": id}
+          {"op": "noteText", "note": id, "before": s, "after": s}
+          {"op": "title", "note": id, "before": s, "after": s}
+        A text change is only made if the text in Keep is still what you
+        saw ("before"); if someone changed it meanwhile, Keep's version is
+        kept and the conflict is reported.
+    omabar-keep dismiss
+        Clear the conflict messages the card shows.
     omabar-keep open [url]
         Open Google Keep (or one note) in your browser.
 
@@ -61,6 +75,8 @@ ACCOUNT_FILE = os.path.join(CONFIG_DIR, "keep.json")
 STATE_FILE = os.path.join(CACHE_DIR, "keep-state.json")     # gkeepapi's own dump, for quick syncs
 PINNED_FILE = os.path.join(CACHE_DIR, "keep-pinned.json")   # the last answer the bar got
 LOCK_FILE = os.path.join(CACHE_DIR, "keep.lock")
+PENDING_FILE = os.path.join(CACHE_DIR, "keep-pending.json")  # edits not yet in Keep, and conflicts
+PENDING_LOCK = os.path.join(CACHE_DIR, "keep-pending.lock")
 VENV = os.environ.get("OMABAR_KEEP_VENV") or os.path.join(DATA_DIR, "keep-venv")
 # Known to work together (2026-11). gpsoauth 2+ drops the urllib3<2 pin.
 REQUIREMENTS = ["gkeepapi==0.17.1", "gpsoauth==3.0.1"]
@@ -73,8 +89,9 @@ BROWSERS = ["chromium", "google-chrome-stable", "google-chrome", "brave", "brave
 SIGNIN_SECONDS = 600       # time to sign in (two-step codes, a phone prompt)
 SECRET_ATTRS = ["service", "omabar-keep"]
 SYNC_SECONDS = 45          # Google can hang a request; never leave the bar waiting
-MAX_ITEMS = 60             # list items sent per note
-MAX_TEXT = 900             # characters of a note's text
+MAX_ITEMS = 400            # list items sent per note
+MAX_TEXT = 20000           # characters of a note's text; longer notes are read-only here
+OPS = {"check", "itemText", "addItem", "deleteItem", "noteText", "title"}
 
 
 # ── storage ───────────────────────────────────────────────────────────────
@@ -206,13 +223,15 @@ def shape_note(node, max_items=MAX_ITEMS, max_text=MAX_TEXT):
         items = [item for item in node.items if not item.deleted and not item.trashed]
         unchecked = [item for item in items if not item.checked]
         checked = [item for item in items if item.checked]
-        note["items"] = [{"text": str(item.text or ""), "checked": bool(item.checked), "indented": bool(item.indented)}
+        note["items"] = [{"id": str(item.id), "text": str(item.text or ""), "checked": bool(item.checked),
+                          "indented": bool(item.indented)}
                          for item in (unchecked + checked)[:max_items]]
         note["unchecked"] = len(unchecked)
         note["checked"] = len(checked)
     else:
         text = str(node.text or "")
         note["text"] = text if len(text) <= max_text else text[:max_text].rstrip() + "…"
+        note["readOnly"] = len(text) > max_text
     return note
 
 
@@ -221,6 +240,78 @@ def pinned_notes(keep):
     # Keep shows pinned notes highest sort value first.
     nodes.sort(key=lambda node: int(getattr(node, "sort", 0) or 0), reverse=True)
     return [shape_note(node) for node in nodes]
+
+
+def quoted(text, limit=40):
+    text = " ".join(str(text or "").split())
+    return "\u201c" + (text if len(text) <= limit else text[:limit - 1] + "\u2026") + "\u201d"
+
+
+def apply_ops(keep, ops, ids):
+    """Make queued edits on Keep's current notes. ids maps the bar's
+    stand-in ids for new items to the ones Keep gave them, and grows as
+    items are added. Returns (done op ids, conflicts)."""
+    from gkeepapi.node import NewListItemPlacementValue
+    done, conflicts = [], []
+
+    def conflict(op, message):
+        conflicts.append({"id": op.get("id", ""), "message": message})
+
+    for op in ops:
+        kind = op.get("op")
+        note = keep.get(str(op.get("note", "")))
+        if note is None or note.deleted or note.trashed:
+            conflict(op, "A note you changed was deleted in Keep, so that change was dropped.")
+            continue
+        name = quoted(note.title) if note.title else "a note"
+        item = None
+        if "item" in op:
+            item_id = ids.get(op["item"], op["item"])
+            item = note.get(item_id) if hasattr(note, "get") else None
+            if item is not None and (item.deleted or item.trashed):
+                item = None
+        if kind == "check":
+            if item is None:
+                conflict(op, f"An item in {name} was removed in Keep before your tick reached it.")
+                continue
+            item.checked = bool(op.get("checked"))
+        elif kind == "itemText":
+            if item is None:
+                conflict(op, f"{quoted(op.get('before'))} in {name} was removed in Keep, so your edit was dropped.")
+                continue
+            now, before, after = str(item.text or ""), str(op.get("before", "")), str(op.get("after", ""))
+            if now not in (before, after):
+                conflict(op, f"{quoted(before)} in {name} was changed in Keep to {quoted(now)}. Keep's version was kept.")
+                continue
+            item.text = after
+        elif kind == "addItem":
+            if not hasattr(note, "add") or getattr(getattr(note, "type", None), "value", "") != "LIST":
+                conflict(op, f"{name} isn't a list any more, so {quoted(op.get('text'))} wasn't added.")
+                continue
+            text = str(op.get("text", ""))
+            # A send that reached Keep but whose answer got lost: the item is
+            # already there, so don't add it twice.
+            already = [existing for existing in note.items if str(existing.text or "") == text
+                       and existing.timestamps.created and existing.timestamps.created.timestamp() >= float(op.get("at", 0)) - 5]
+            new = already[0] if already else note.add(text, False, NewListItemPlacementValue.Bottom)
+            if op.get("local"):
+                ids[op["local"]] = str(new.id)
+        elif kind == "deleteItem":
+            if item is not None:
+                item.delete()
+        elif kind in ("noteText", "title"):
+            field = "text" if kind == "noteText" else "title"
+            now, before, after = str(getattr(note, field) or ""), str(op.get("before", "")), str(op.get("after", ""))
+            if now not in (before, after):
+                what = "text" if field == "text" else "title"
+                conflict(op, f"The {what} of {name} was changed in Keep while you edited it. Keep's version was kept.")
+                continue
+            setattr(note, field, after)
+        else:
+            conflict(op, f"Unknown change {kind!r} skipped.")
+            continue
+        done.append(op.get("id", ""))
+    return done, conflicts
 
 
 def worker(task):
@@ -252,8 +343,13 @@ def worker(task):
             except gkeepapi.exception.LoginException as error:
                 out = {"error": f"Google signed Omabar out of Keep ({error}). Run omabar-keep connect again.", "signedOut": True}
             else:
+                ops = payload.get("ops") or []
+                ids = dict(payload.get("ids") or {})
+                done, conflicts = apply_ops(keep, ops, ids) if ops else ([], [])
+                if done:
+                    keep.sync()   # send the edits; raises (and nothing is marked done) if Keep refuses
                 write_private(STATE_FILE, keep.dump())
-                out = {"notes": pinned_notes(keep)}
+                out = {"notes": pinned_notes(keep), "done": done, "conflicts": conflicts, "ids": ids}
         else:
             out = {"error": f"unknown task {task}"}
     except TimeoutError as error:
@@ -470,19 +566,161 @@ def emit(data):
     print(json.dumps(data))
 
 
+@contextlib.contextmanager
+def pending_lock():
+    """Guards the queue of edits, separately from syncing, so a tick made
+    while a sync runs is queued straight away."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(PENDING_LOCK, "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+def read_pending():
+    data = read_json(PENDING_FILE, {})
+    if not isinstance(data, dict):
+        data = {}
+    data.setdefault("ops", [])
+    data.setdefault("ids", {})
+    data.setdefault("conflicts", [])
+    return data
+
+
+def overlay(notes, pending):
+    """The notes as they'll be once queued edits reach Keep, so the card
+    shows a tick or new item the moment you make it."""
+    notes = json.loads(json.dumps(notes or []))
+    ids = pending.get("ids", {})
+    by_id = {note.get("id"): note for note in notes}
+    for op in pending.get("ops", []):
+        note = by_id.get(op.get("note"))
+        if not note:
+            continue
+        items = note.get("items") if isinstance(note.get("items"), list) else None
+        wanted = op.get("item")
+        item = None
+        if items is not None and wanted:
+            for candidate in items:
+                if candidate.get("id") in (wanted, ids.get(wanted)):
+                    item = candidate
+                    break
+        kind = op.get("op")
+        if kind == "check" and item:
+            item["checked"] = bool(op.get("checked"))
+        elif kind == "itemText" and item:
+            item["text"] = str(op.get("after", ""))
+        elif kind == "addItem" and items is not None:
+            if not any(candidate.get("id") in (op.get("local"), ids.get(op.get("local"))) for candidate in items):
+                items.append({"id": op.get("local", ""), "text": str(op.get("text", "")), "checked": False,
+                              "indented": False, "local": True})
+        elif kind == "deleteItem" and item and items is not None:
+            items.remove(item)
+        elif kind == "noteText":
+            note["text"] = str(op.get("after", ""))
+        elif kind == "title":
+            note["title"] = str(op.get("after", ""))
+    for note in notes:
+        if isinstance(note.get("items"), list):
+            open_items = [item for item in note["items"] if not item.get("checked")]
+            done_items = [item for item in note["items"] if item.get("checked")]
+            note["items"] = open_items + done_items
+            note["unchecked"], note["checked"] = len(open_items), len(done_items)
+    return notes
+
+
+def answer_with(base, pending=None):
+    """What the card gets: the notes with queued edits applied, how many
+    edits are still waiting, and any conflicts to show."""
+    pending = pending if pending is not None else read_pending()
+    data = dict(base)
+    data["notes"] = overlay(base.get("notes", []), pending)
+    data["pending"] = len(pending["ops"])
+    data["conflicts"] = pending["conflicts"]
+    return data
+
+
 def cmd_status():
     info = account()
-    emit({"connected": bool(info and keyring_lookup(info["email"])), "email": info["email"] if info else ""})
+    emit({"connected": bool(info and keyring_lookup(info["email"])), "email": info["email"] if info else "",
+          "pending": len(read_pending()["ops"])})
 
 
-def cmd_cached():
+def cached_base():
     info = account()
     cached = read_json(PINNED_FILE)
     if not info or not isinstance(cached, dict):
-        emit({"connected": bool(info), "notes": [], "synced": 0, "cached": True})
-        return
-    cached.update(connected=True, cached=True)
-    emit(cached)
+        return {"connected": bool(info), "notes": [], "synced": 0}
+    cached["connected"] = True
+    return cached
+
+
+def cmd_cached():
+    data = answer_with(cached_base())
+    data["cached"] = True
+    emit(data)
+
+
+def validate_op(op):
+    if not isinstance(op, dict) or op.get("op") not in OPS or not op.get("note"):
+        return None
+    clean = {key: op[key] for key in ("op", "note", "item", "before", "after", "text", "checked") if key in op}
+    for key in ("note", "item", "before", "after", "text"):
+        if key in clean:
+            clean[key] = str(clean[key])
+    if clean["op"] in ("check", "itemText", "deleteItem") and not clean.get("item"):
+        return None
+    if clean["op"] == "addItem" and not clean.get("text", "").strip():
+        return None
+    clean["id"] = secrets.token_hex(6)
+    clean["at"] = time.time()
+    if clean["op"] == "addItem":
+        clean["local"] = "local:" + clean["id"]
+    return clean
+
+
+def cmd_edit(raw):
+    try:
+        op = validate_op(json.loads(raw))
+    except ValueError:
+        op = None
+    if op is None:
+        emit({"error": "That change couldn't be read."})
+        sys.exit(1)
+    with pending_lock():
+        pending = read_pending()
+        ops = pending["ops"]
+        # Typing the same field again replaces the queued edit rather than
+        # stacking them, keeping the first "before" for the conflict check.
+        if op["op"] in ("itemText", "noteText", "title"):
+            for queued in ops:
+                if queued.get("op") == op["op"] and queued.get("note") == op["note"] and queued.get("item") == op.get("item"):
+                    queued["after"] = op["after"]
+                    queued["at"] = op["at"]
+                    op = None
+                    break
+        # A new item edited before it reached Keep: change the queued add.
+        if op and op.get("item", "").startswith("local:"):
+            for queued in ops:
+                if queued.get("local") == op["item"]:
+                    if op["op"] == "itemText":
+                        queued["text"] = op["after"]
+                        op = None
+                    elif op["op"] == "deleteItem":
+                        ops.remove(queued)
+                        op = None
+                    break
+        if op:
+            ops.append(op)
+        write_private(PENDING_FILE, pending)
+        emit(answer_with(cached_base(), pending))
+
+
+def cmd_dismiss():
+    with pending_lock():
+        pending = read_pending()
+        pending["conflicts"] = []
+        write_private(PENDING_FILE, pending)
+    emit(answer_with(cached_base()))
 
 
 @contextlib.contextmanager
@@ -497,33 +735,50 @@ def sync_lock():
 def cmd_pinned():
     info = account()
     if not info:
-        emit({"connected": False, "notes": []})
+        emit({"connected": False, "notes": [], "pending": 0, "conflicts": []})
         return
     token = keyring_lookup(info["email"])
     if not token:
-        emit({"connected": False, "notes": [], "error": "No Keep token in your keyring. Run omabar-keep connect."})
+        emit(answer_with({"connected": False, "notes": cached_base().get("notes", []),
+                          "error": "No Keep token in your keyring. Run omabar-keep connect."}))
         return
     if not venv_ready():
-        emit({"connected": True, "notes": [], "error": "The Keep library is missing. Run omabar-keep connect."})
+        emit(answer_with({"connected": True, "notes": cached_base().get("notes", []),
+                          "error": "The Keep library is missing. Run omabar-keep connect."}))
         return
     with sync_lock():
-        # Another bar may have just synced; its answer is good enough.
+        with pending_lock():
+            snapshot = read_pending()
+        # Another bar may have just synced; its answer is good enough, unless
+        # there are edits to send.
         recent = read_json(PINNED_FILE)
-        if isinstance(recent, dict) and 0 <= time.time() - recent.get("synced", 0) < 10:
+        if not snapshot["ops"] and isinstance(recent, dict) and 0 <= time.time() - recent.get("synced", 0) < 10:
             recent["connected"] = True
-            emit(recent)
+            emit(answer_with(recent, snapshot))
             return
-        answer = run_worker("sync", {"email": info["email"], "token": token, "device": info["device"]})
+        answer = run_worker("sync", {"email": info["email"], "token": token, "device": info["device"],
+                                     "ops": snapshot["ops"], "ids": snapshot["ids"]})
         if "notes" in answer:
             data = {"notes": answer["notes"], "synced": time.time(), "email": info["email"]}
             write_private(PINNED_FILE, data)
-            data["connected"] = True
-            emit(data)
+            with pending_lock():
+                pending = read_pending()
+                finished = set(answer.get("done", [])) | {c.get("id") for c in answer.get("conflicts", [])}
+                pending["ops"] = [op for op in pending["ops"] if op.get("id") not in finished]
+                pending["ids"].update(answer.get("ids") or {})
+                # Stand-ins no queued edit mentions any more can go.
+                still = {op.get("item") for op in pending["ops"]} | {op.get("local") for op in pending["ops"]}
+                pending["ids"] = {key: value for key, value in pending["ids"].items() if key in still}
+                pending["conflicts"] = (pending["conflicts"] + answer.get("conflicts", []))[-10:]
+                write_private(PENDING_FILE, pending)
+                data["connected"] = True
+                emit(answer_with(data, pending))
             return
-    # Failed: show what we had, with the reason.
-    cached = read_json(PINNED_FILE, {})
-    emit({"connected": not answer.get("signedOut"), "notes": cached.get("notes", []) if isinstance(cached, dict) else [],
-          "synced": cached.get("synced", 0) if isinstance(cached, dict) else 0, "error": answer.get("error", "Keep sync failed.")})
+    # Failed: show what we had, with the reason. Queued edits stay queued.
+    base = cached_base()
+    base["connected"] = not answer.get("signedOut")
+    base["error"] = answer.get("error", "Keep sync failed.")
+    emit(answer_with(base))
 
 
 def open_url(url):
@@ -634,7 +889,7 @@ def cmd_disconnect():
     info = account()
     if info:
         keyring_clear(info["email"])
-    for path in (ACCOUNT_FILE, STATE_FILE, PINNED_FILE):
+    for path in (ACCOUNT_FILE, STATE_FILE, PINNED_FILE, PENDING_FILE):
         remove(path)
     print("Google Keep disconnected. The token and cached notes are gone.")
 
@@ -649,6 +904,10 @@ def main(argv):
         cmd_cached()
     elif command == "pinned":
         cmd_pinned()
+    elif command == "edit":
+        cmd_edit(argv[2] if len(argv) > 2 else "")
+    elif command == "dismiss":
+        cmd_dismiss()
     elif command == "open":
         cmd_open(argv[2] if len(argv) > 2 else KEEP_URL)
     elif command == "connect":
