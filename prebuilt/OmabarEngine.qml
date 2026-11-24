@@ -13,6 +13,7 @@ import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
 import "BarModel.js" as BarModel
+import "../modules" as OmabarModules
 
 Item {
   id: root
@@ -732,6 +733,23 @@ Item {
   readonly property int omabarTuck: Style.gapsOut
   // Light themes get a whiter sheen, dark themes a quieter one.
   readonly property bool omabarLightTheme: (0.2126 * background.r + 0.7152 * background.g + 0.0722 * background.b) > 0.55
+
+  // Focus mode (modules/OmabarFocusController.qml): one for the whole bar,
+  // on every monitor, which Omabar's modules reach as bar.omabarFocus. While
+  // it runs, every widget but these folds away (ModuleSlot.omabarFolded); a
+  // widget that needs to be seen (a battery running out) says so with
+  // omabarUrgent and stays.
+  readonly property var omabarFocus: omabarFocusController
+  readonly property bool omabarSlim: omabarFocusController.slim
+  readonly property var omabarFocusKeeps: ["omabar-menu", "omabar-workspaces", "omabar-clock", "omabar-focus",
+    "omarchy.menu", "omarchy.workspaces", "omarchy.clock"]
+  function omabarFoldsInFocus(slot) {
+    if (!omabarSlim || !slot || slot.region === "tray") return false
+    if (omabarFocusKeeps.indexOf(String(slot.moduleName)) !== -1) return false
+    var item = slot.activeItem
+    return !(item && item.omabarUrgent === true)
+  }
+  OmabarModules.OmabarFocusController { id: omabarFocusController; bar: root }
 
   // Display cutouts (a camera notch) the platform's own package describes in
   // the fixed platform root, which no environment variable moves. Most machines
@@ -3004,7 +3022,37 @@ Item {
     // of the room: all of it until the room moves away.
     readonly property real alongLength: removalPending ? 0 : dragSource
       ? (root.barDragLengths[root.barDragHome] || 0)
-      : (root.vertical ? widgetHeight : widgetWidth)
+      : (root.vertical ? widgetHeight : widgetWidth) * omabarFold
+
+    // Omabar Focus mode: the widget fades, then its room closes; on the way
+    // back the room opens, then it fades in. One short animation each way,
+    // none at all when the bar starts up already in Focus mode.
+    readonly property bool omabarFolded: root.omabarFoldsInFocus(slot)
+    property real omabarFold: 1
+    property real omabarFade: 1
+    states: State {
+      name: "omabarFolded"
+      when: slot.omabarFolded
+      PropertyChanges { target: slot; omabarFold: 0; omabarFade: 0 }
+    }
+    transitions: [
+      Transition {
+        to: "omabarFolded"
+        enabled: root.omabarFocus.ready
+        SequentialAnimation {
+          NumberAnimation { target: slot; property: "omabarFade"; duration: Style.duration(120); easing.type: Easing.OutCubic }
+          NumberAnimation { target: slot; property: "omabarFold"; duration: Style.duration(320); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut }
+        }
+      },
+      Transition {
+        from: "omabarFolded"
+        enabled: root.omabarFocus.ready
+        SequentialAnimation {
+          NumberAnimation { target: slot; property: "omabarFold"; duration: Style.duration(320); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut }
+          NumberAnimation { target: slot; property: "omabarFade"; duration: Style.duration(180); easing.type: Easing.OutCubic }
+        }
+      }
+    ]
 
     // Where the dragged widget lands when it goes back where it was.
     readonly property Item widgetRoom: widgetArea
@@ -3043,7 +3091,7 @@ Item {
 
       width: root.vertical ? slot.widgetWidth : slot.alongLength
       height: root.vertical ? slot.alongLength : slot.widgetHeight
-      clip: slot.dragSource || slot.removalPending
+      clip: slot.dragSource || slot.removalPending || slot.omabarFold < 1
 
       RoomOutline { visible: slot.dragSource }
 
@@ -3052,6 +3100,8 @@ Item {
       Item {
         id: holder
         anchors.centerIn: parent
+        opacity: slot.omabarFade
+        visible: slot.omabarFade > 0
         width: slot.widgetWidth
         height: slot.widgetHeight
       }

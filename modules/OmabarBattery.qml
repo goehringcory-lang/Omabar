@@ -83,6 +83,9 @@ Item {
   readonly property bool charging: !onBattery && present
     && ((pair.external && pair.external.state === "charging") || (pair.internal && pair.internal.state === "charging"))
   readonly property bool full: !onBattery && present && !charging && totalPercent >= 99
+  // Focus mode folds the battery away with the rest of the right side, but
+  // not while it is running out.
+  readonly property bool omabarUrgent: present && onBattery && totalPercent >= 0 && totalPercent <= 15
 
   // UPower's combined device knows the time left across both packs.
   readonly property string timeText: {

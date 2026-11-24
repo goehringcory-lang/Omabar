@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+"""Omabar's Focus mode.
+
+    omabar-focus toggle        start Focus mode, or end it if it's on
+    omabar-focus start         mute notifications, start Lofi Beats, slim the bar
+    omabar-focus stop          put notifications and music back as they were
+    omabar-focus pause | resume | skip
+    omabar-focus status        print where Focus mode is, as JSON
+    omabar-focus set <key> <value>
+        focus 25 · shortBreak 5 · longBreak 15 · rounds 4 (minutes, rounds)
+        repeat false (true: start over after the long break instead of ending)
+        music true · lofi <spotify link or URI> · sound true
+    omabar-focus set            print the settings
+
+Focus mode is a Pomodoro: four rounds of 25 minutes of focus with a 5 minute
+break between them and a 15 minute break after the last, then it ends. While
+it runs the bar shows only the Omarchy tile (with a ring that drains as the
+round runs down), the workspaces, the clock and the time left.
+
+Bind it to a key in ~/.config/hypr/bindings.conf, for example:
+
+    bind = SUPER ALT, F, Focus mode, exec, ~/.config/omarchy/plugins/goehringcory.omabar/bin/omabar-focus toggle
+
+The bar watches the state file ($XDG_STATE_HOME/omabar/focus.json), so the
+bar on every monitor follows whatever this writes. Settings are kept in
+~/.config/omabar/focus.json.
+
+Do Not Disturb: turned on at the start only if it was off, and turned off at
+the end only if Focus turned it on and it is still on. Music: Lofi Beats is
+started only if nothing is playing already, and paused at the end only if
+Focus started it.
+"""
+import fcntl
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "omabar")
+STATE_DIR = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "omabar")
+SETTINGS_FILE = os.path.join(CONFIG_DIR, "focus.json")
+STATE_FILE = os.path.join(STATE_DIR, "focus.json")
+
+LOFI = "spotify:playlist:0vvXsWCC9xrXsKd4FyS8kM"
+DEFAULTS = {
+    "focus": 25, "shortBreak": 5, "longBreak": 15, "rounds": 4,
+    "repeat": False, "music": True, "lofi": LOFI, "sound": True,
+}
+LIMITS = {"focus": (1, 240), "shortBreak": (1, 120), "longBreak": (1, 120), "rounds": (1, 12)}
+
+MPRIS = ["org.mpris.MediaPlayer2.spotify", "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player"]
+
+
+# ── files ─────────────────────────────────────────────────────────────────
+
+def read_json(path):
+    try:
+        with open(path) as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_json(path, data):
+    """Replace the file in one step, so the bar never reads half of it."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    partial = f"{path}.{os.getpid()}.tmp"
+    with open(partial, "w") as handle:
+        json.dump(data, handle, indent=2)
+        handle.write("\n")
+    os.replace(partial, path)
+
+
+def settings():
+    merged = dict(DEFAULTS)
+    for key, value in read_json(SETTINGS_FILE).items():
+        if key in DEFAULTS:
+            merged[key] = value
+    return merged
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+# ── the schedule (the same as modules/OmabarFocusModel.js) ───────────────
+
+def number(value, fallback, low, high):
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if n != n or n < low:
+        return fallback
+    return min(high, n)
+
+
+def config(state):
+    return {
+        "focus": number(state.get("focus"), 25, 1, 240),
+        "shortBreak": number(state.get("shortBreak"), 5, 1, 120),
+        "longBreak": number(state.get("longBreak"), 15, 1, 120),
+        "rounds": int(round(number(state.get("rounds"), 4, 1, 12))),
+        "repeat": state.get("repeat") is True,
+    }
+
+
+def cycle(state):
+    c = config(state)
+    out = []
+    for r in range(1, c["rounds"] + 1):
+        out.append({"phase": "focus", "round": r, "long": False, "ms": c["focus"] * 60000})
+        last = r == c["rounds"]
+        out.append({"phase": "break", "round": r, "long": last,
+                    "ms": (c["longBreak"] if last else c["shortBreak"]) * 60000})
+    return out
+
+
+def elapsed(state, now):
+    if not state.get("active"):
+        return 0
+    until = state.get("pausedAt") or now
+    return max(0, until - (state.get("startedAt") or 0) - (state.get("pausedMs") or 0))
+
+
+def at(state, now):
+    if not state.get("active") or not state.get("startedAt"):
+        return {"active": False, "paused": False, "finished": False, "phase": "", "round": 0, "rounds": 0,
+                "long": False, "lengthMs": 0, "elapsedMs": 0, "remainingMs": 0, "progress": 0, "cycleIndex": 0}
+    phases = cycle(state)
+    total = sum(p["ms"] for p in phases)
+    t = elapsed(state, now)
+    repeat = config(state)["repeat"]
+    cycles = int(t // total)
+    finished = not repeat and cycles >= 1
+    if finished:
+        cycles, t = 0, total
+    in_cycle = t - cycles * total
+    index = 0
+    while index < len(phases) - 1 and in_cycle >= phases[index]["ms"]:
+        in_cycle -= phases[index]["ms"]
+        index += 1
+    p = phases[index]
+    return {
+        "active": True, "paused": bool(state.get("pausedAt")), "finished": finished,
+        "phase": p["phase"], "round": p["round"], "rounds": len(phases) // 2, "long": p["long"],
+        "lengthMs": p["ms"], "elapsedMs": in_cycle, "remainingMs": max(0, p["ms"] - in_cycle),
+        "progress": max(0.0, min(1.0, in_cycle / p["ms"])),
+        "cycleIndex": cycles * len(phases) + index,
+    }
+
+
+# ── notifications and music ───────────────────────────────────────────────
+
+def run(args, timeout=6):
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def dnd():
+    """True or False, or None when the shell can't be asked."""
+    result = run(["omarchy-shell", "-q", "notifications", "isDnd"])
+    if result is None or result.returncode != 0:
+        return None
+    answer = result.stdout.strip().strip('"').lower()
+    return answer == "on" if answer in ("on", "off") else None
+
+
+def set_dnd(on):
+    result = run(["omarchy-shell", "-q", "notifications", "setDnd", "on" if on else "off"])
+    return result is not None and result.returncode == 0
+
+
+def playback():
+    """"Playing", "Paused", "Stopped", or "" when Spotify isn't running."""
+    result = run(["busctl", "--user", "--timeout=3", "get-property", *MPRIS, "PlaybackStatus"])
+    if result is None or result.returncode != 0:
+        return ""
+    match = re.search(r'"(\w+)"', result.stdout)
+    return match.group(1) if match else ""
+
+
+def pause_music():
+    run(["busctl", "--user", "--timeout=3", "call", *MPRIS, "Pause"])
+
+
+def start_lofi(link):
+    """Played in the background: Spotify can take a while to start, and Focus
+    mode never waits for it."""
+    helper = os.path.join(HERE, "omabar-spotify")
+    try:
+        subprocess.Popen([sys.executable, helper, "play", link], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except OSError:
+        return False
+
+
+# ── commands ──────────────────────────────────────────────────────────────
+
+def cmd_start():
+    state = read_json(STATE_FILE)
+    if state.get("active"):
+        return 0
+    s = settings()
+    c = config(s)
+    before = dnd()
+    dnd_set = before is False and set_dnd(True)
+    owns_music = False
+    if s.get("music") is not False and playback() != "Playing":
+        owns_music = start_lofi(str(s.get("lofi") or LOFI))
+    write_json(STATE_FILE, {
+        "active": True,
+        "startedAt": now_ms(),
+        "pausedAt": None,
+        # Time the clock should leave out: paused time, less skipped time.
+        "pausedMs": 0,
+        "focus": c["focus"], "shortBreak": c["shortBreak"], "longBreak": c["longBreak"],
+        "rounds": c["rounds"], "repeat": c["repeat"],
+        "sound": s.get("sound") is not False,
+        "dndSet": dnd_set,
+        "ownsMusic": owns_music,
+    })
+    return 0
+
+
+def cmd_stop():
+    state = read_json(STATE_FILE)
+    if not state.get("active"):
+        return 0
+    # Written first, so the bar comes back at once even if the shell or
+    # Spotify are slow to answer.
+    write_json(STATE_FILE, {"active": False, "endedAt": now_ms()})
+    if state.get("dndSet") and dnd() is True:
+        set_dnd(False)
+    if state.get("ownsMusic") and playback() == "Playing":
+        pause_music()
+    return 0
+
+
+def cmd_toggle():
+    return cmd_stop() if read_json(STATE_FILE).get("active") else cmd_start()
+
+
+def cmd_pause(at_ms=None):
+    state = read_json(STATE_FILE)
+    if not state.get("active") or state.get("pausedAt"):
+        return 0
+    moment = now_ms() if at_ms is None else max(int(state.get("startedAt") or 0), min(now_ms(), at_ms))
+    state["pausedAt"] = moment
+    write_json(STATE_FILE, state)
+    return 0
+
+
+def cmd_resume():
+    state = read_json(STATE_FILE)
+    if not state.get("active") or not state.get("pausedAt"):
+        return 0
+    state["pausedMs"] = (state.get("pausedMs") or 0) + max(0, now_ms() - state["pausedAt"])
+    state["pausedAt"] = None
+    write_json(STATE_FILE, state)
+    return 0
+
+
+def cmd_skip():
+    """End the current focus round or break now."""
+    state = read_json(STATE_FILE)
+    if not state.get("active"):
+        return 0
+    info = at(state, now_ms())
+    if info["finished"]:
+        return cmd_stop()
+    state["pausedMs"] = (state.get("pausedMs") or 0) - info["remainingMs"]
+    write_json(STATE_FILE, state)
+    if at(state, now_ms())["finished"]:
+        return cmd_stop()
+    return 0
+
+
+def cmd_status():
+    state = read_json(STATE_FILE)
+    info = at(state, now_ms())
+    info["dndSet"] = bool(state.get("dndSet"))
+    info["ownsMusic"] = bool(state.get("ownsMusic"))
+    print(json.dumps(info))
+    return 0
+
+
+def parse_value(key, raw):
+    if key in ("repeat", "music", "sound"):
+        lowered = raw.strip().lower()
+        if lowered in ("true", "on", "yes", "1"):
+            return True
+        if lowered in ("false", "off", "no", "0"):
+            return False
+        raise ValueError(f"{key} is true or false")
+    if key == "lofi":
+        if not re.match(r"(spotify:|https?://open\.spotify\.com/)", raw.strip()):
+            raise ValueError("lofi is a spotify: URI or an open.spotify.com link")
+        return raw.strip()
+    low, high = LIMITS[key]
+    try:
+        n = float(raw)
+    except ValueError:
+        raise ValueError(f"{key} is a number from {low} to {high}")
+    if not (low <= n <= high):
+        raise ValueError(f"{key} is a number from {low} to {high}")
+    return int(n) if key == "rounds" or n == int(n) else n
+
+
+def cmd_set(args):
+    if not args:
+        print(json.dumps(settings(), indent=2))
+        return 0
+    if len(args) != 2 or args[0] not in DEFAULTS:
+        print("usage: omabar-focus set <" + "|".join(DEFAULTS) + "> <value>", file=sys.stderr)
+        return 2
+    try:
+        value = parse_value(args[0], args[1])
+    except ValueError as error:
+        print(f"omabar-focus: {error}", file=sys.stderr)
+        return 2
+    saved = read_json(SETTINGS_FILE)
+    saved[args[0]] = value
+    write_json(SETTINGS_FILE, saved)
+    print(f"{args[0]} = {json.dumps(value)} (used from the next start)")
+    return 0
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0 if len(argv) >= 2 else 2
+    command, rest = argv[1], argv[2:]
+    at_ms = None
+    if command == "pause" and len(rest) == 2 and rest[0] == "--at" and rest[1].isdigit():
+        at_ms, rest = int(rest[1]), []
+    commands = {"start": cmd_start, "stop": cmd_stop, "toggle": cmd_toggle,
+                "pause": lambda: cmd_pause(at_ms),
+                "resume": cmd_resume, "skip": cmd_skip, "status": cmd_status}
+    if command == "set":
+        return cmd_set(rest)
+    # One change at a time: a double click must not start Focus twice.
+    os.makedirs(STATE_DIR, exist_ok=True)
+    lock = open(os.path.join(STATE_DIR, "focus.lock"), "w")
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    if command in commands and not rest:
+        return commands[command]()
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
