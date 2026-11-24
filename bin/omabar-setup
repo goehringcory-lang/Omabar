@@ -268,6 +268,8 @@ doctor() {
   echo "spotify: $("$PLUGIN_DIR/bin/omabar-spotify" status 2>&1 | head -c 300 || true)"
   echo "calendar: $("$PLUGIN_DIR/bin/omabar-gcal" status 2>&1 | head -c 300 || true)"
   echo "mail: $("$PLUGIN_DIR/bin/omabar-mail-unread" 2>&1 | head -c 300 || true)"
+  echo "keep: $("$PLUGIN_DIR/bin/omabar-keep" status 2>&1 | head -c 300 || true)"
+  printf 'secret-tool: %s\n' "$(command -v secret-tool || echo 'missing (sudo pacman -S --needed libsecret gnome-keyring)')"
   echo "weather cache: $(ls "$OMABAR_CACHE_DIR" 2>/dev/null | grep -i weather | tr '\n' ' ' || true)"
   echo "== plugins"
   omarchy plugin list 2>&1 | grep -v -E '^omarchy\.' || true
@@ -544,7 +546,9 @@ jq -S \
           ]
       ),
       tray: (
-        (if $omalandPanel != "" then [ { id: "omabar-omaland", type: "command", text: "󰏘",
+        # Google Keep: pinned notes and lists (bin/omabar-keep connect).
+        [ { id: "omabar-keep", type: "qml", source: ($dir + "/modules/OmabarKeep.qml") } ]
+        + (if $omalandPanel != "" then [ { id: "omabar-omaland", type: "command", text: "󰏘",
               tooltip: "Omaland: Hyprland look and feel",
               onClick: ("omarchy-shell shell toggle " + $omalandPanel + " {}") } ] else [] end)
         + ($others | map({ id: . }))
