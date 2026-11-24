@@ -48,7 +48,9 @@ Item {
     Quickshell.execDetached([helper].concat(args))
   }
   function toggle() { run(["toggle"]) }
-  function start() { run(["start"]) }
+  // Start with `minutes` for each round (remembered for next time), or the
+  // saved length when none is given.
+  function start(minutes) { run(minutes ? ["start", String(Math.round(minutes))] : ["start"]) }
   function stop() { run(["stop"]) }
   function pause() { run(["pause"]) }
   function resume() { run(["resume"]) }
@@ -58,6 +60,22 @@ Item {
     cue = text
     cueTimer.interval = ms || 4000
     cueTimer.restart()
+  }
+
+  // The round length to offer first: the last one picked, from
+  // ~/.config/omabar/focus.json (bin/omabar-focus keeps it there).
+  readonly property string settingsFile: (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config") + "/omabar/focus.json"
+  property int savedMinutes: Model.DEFAULTS.focus
+  FileView {
+    path: controller.settingsFile
+    printErrors: false
+    watchChanges: true
+    onFileChanged: reload()
+    onLoaded: {
+      var saved = {}
+      try { saved = JSON.parse(text() || "{}") || {} } catch (e) { saved = {} }
+      controller.savedMinutes = Math.round(Model.config(saved).focus)
+    }
   }
 
   FileView {

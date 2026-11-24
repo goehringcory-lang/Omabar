@@ -325,6 +325,17 @@ esac
         self.assertFalse(self.state()["active"])
         self.assertEqual(self.dnd(), "off")
 
+    def test_start_with_minutes_is_remembered(self):
+        self.set_dnd("off")
+        self.run_cli("start", "45")
+        self.assertEqual(self.state()["focus"], 45)
+        self.run_cli("stop")
+        self.run_cli("start")
+        self.assertEqual(self.state()["focus"], 45)
+        bad = subprocess.run([os.path.join(self.plugin, "omabar-focus"), "start", "0"], env=self.env,
+                             capture_output=True, text=True)
+        self.assertEqual(bad.returncode, 2)
+
     def test_settings(self):
         self.run_cli("set", "focus", "50")
         self.run_cli("set", "music", "false")

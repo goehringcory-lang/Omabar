@@ -2,7 +2,8 @@
 """Omabar's Focus mode.
 
     omabar-focus toggle        start Focus mode, or end it if it's on
-    omabar-focus start         mute notifications, start Lofi Beats, slim the bar
+    omabar-focus start [min]   mute notifications, start Lofi Beats, slim the bar
+                               (min: round length, remembered for next time)
     omabar-focus stop          put notifications and music back as they were
     omabar-focus pause | resume | skip
     omabar-focus status        print where Focus mode is, as JSON
@@ -226,10 +227,16 @@ def start_lofi(link):
 
 # ── commands ──────────────────────────────────────────────────────────────
 
-def cmd_start():
+def cmd_start(minutes=None):
+    """Start Focus mode; `minutes` sets this round length and is remembered
+    as the length for next time (what the bar's time picker sends)."""
     state = read_json(STATE_FILE)
     if state.get("active"):
         return 0
+    if minutes is not None:
+        saved = read_json(SETTINGS_FILE)
+        saved["focus"] = minutes
+        write_json(SETTINGS_FILE, saved)
     s = settings()
     c = config(s)
     before = dnd()
@@ -363,7 +370,15 @@ def main(argv):
     at_ms = None
     if command == "pause" and len(rest) == 2 and rest[0] == "--at" and rest[1].isdigit():
         at_ms, rest = int(rest[1]), []
-    commands = {"start": cmd_start, "stop": cmd_stop, "toggle": cmd_toggle,
+    minutes = None
+    if command == "start" and len(rest) == 1:
+        try:
+            minutes = parse_value("focus", rest[0])
+        except ValueError as error:
+            print(f"omabar-focus: {error}", file=sys.stderr)
+            return 2
+        rest = []
+    commands = {"start": lambda: cmd_start(minutes), "stop": cmd_stop, "toggle": cmd_toggle,
                 "pause": lambda: cmd_pause(at_ms),
                 "resume": cmd_resume, "skip": cmd_skip, "status": cmd_status}
     if command == "set":

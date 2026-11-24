@@ -60,6 +60,7 @@ Item {
 
   function close() {
     closeTimer.stop()
+    focusPicking = false
     pinned = false
     hoverOpen = false
     editing = false
@@ -122,6 +123,18 @@ Item {
   // ── Focus mode ──────────────────────────────────────────────────────
   readonly property var focusMode: bar && bar.omabarFocus ? bar.omabarFocus : null
   readonly property bool focusing: !!focusMode && focusMode.active
+  // The Focus tile was clicked: the panel offers round lengths to start with.
+  property bool focusPicking: false
+  readonly property var focusChoices: {
+    var list = [15, 25, 45, 60, 90]
+    var saved = focusMode ? focusMode.savedMinutes : 25
+    if (list.indexOf(saved) === -1) { list.push(saved); list.sort(function(a, b) { return a - b }) }
+    return list
+  }
+  function startFocus(minutes) {
+    close()
+    if (focusMode) focusMode.start(minutes)
+  }
   readonly property string focusLeft: focusing ? Math.max(1, Math.ceil(focusMode.info.remainingMs / 60000)) + "m" : ""
 
   // ── widget tiles ────────────────────────────────────────────────────
@@ -447,13 +460,19 @@ Item {
           readonly property string key: "omabar:focus"
           visible: !!root.focusMode && (root.editing || !root.isHidden(key))
           dimmed: root.isHidden(key)
-          on: root.focusing
+          on: root.focusing || root.focusPicking
           icon: "\u{F08C9}"
           label: root.focusing ? "Focus · " + root.focusLeft : "Focus"
           onPicked: function(button) {
             if (root.editing) { root.toggleHidden(key); return }
-            root.close()
-            root.focusMode.toggle()
+            if (root.focusing) {
+              root.close()
+              root.focusMode.stop()
+              return
+            }
+            // Ask how long first; the panel stays open while you pick.
+            root.focusPicking = !root.focusPicking
+            if (root.focusPicking) root.hold()
           }
         }
 
@@ -471,6 +490,64 @@ Item {
               else root.activate(modelData)
             }
           }
+        }
+      }
+
+      // ── Focus: how long ─────────────────────────────────────────────
+      Column {
+        width: parent.width
+        spacing: Style.space(8)
+        visible: root.focusPicking && !root.focusing && !root.editing
+
+        SectionTitle { text: "Focus for" }
+
+        Row {
+          spacing: Style.space(6)
+          Repeater {
+            model: root.focusChoices
+            Rectangle {
+              id: choice
+              required property int modelData
+              readonly property bool saved: root.focusMode && modelData === root.focusMode.savedMinutes
+              width: Math.floor((panelColumn.width - Style.space(6) * (root.focusChoices.length - 1)) / root.focusChoices.length)
+              height: Style.space(40)
+              radius: Style.space(10)
+              color: saved
+                ? Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, choiceArea.containsMouse ? 0.32 : 0.22)
+                : Qt.rgba(root.ink.r, root.ink.g, root.ink.b, choiceArea.containsMouse ? 0.14 : 0.07)
+              scale: choiceArea.pressed ? 0.95 : 1
+              Behavior on color { ColorAnimation { duration: Style.duration(120) } }
+              Behavior on scale { NumberAnimation { duration: Style.duration(140); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut } }
+
+              Text {
+                anchors.centerIn: parent
+                // 15m ... 90m, then whole hours (2h); anything else in minutes.
+                text: choice.modelData >= 120 && choice.modelData % 60 === 0 ? (choice.modelData / 60) + "h" : choice.modelData + "m"
+                color: choice.saved || choiceArea.containsMouse ? Commons.Color.accent : root.ink
+                font.family: root.fontName
+                font.pixelSize: Style.font.bodySmall
+                font.weight: choice.saved ? Font.DemiBold : Font.Normal
+              }
+
+              MouseArea {
+                id: choiceArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.startFocus(choice.modelData)
+              }
+            }
+          }
+        }
+
+        Text {
+          width: parent.width
+          wrapMode: Text.WordWrap
+          text: "Each round, then a break. Your pick is remembered for next time."
+          color: root.ink
+          opacity: 0.5
+          font.family: root.fontName
+          font.pixelSize: Style.font.caption
         }
       }
 
