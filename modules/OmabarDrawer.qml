@@ -247,6 +247,15 @@ Item {
 
   property string hoveredApp: ""
   // How many app icons the panel shows: all of them while editing.
+  readonly property int shownTiles: {
+    var n = 0
+    for (var i = 0; i < trayEntries.length; i++) {
+      var entry = trayEntries[i]
+      if (tileAvailable(entry) && (editing || !isHidden(entryId(entry)))) n++
+    }
+    return n
+  }
+
   readonly property int shownApps: {
     if (editing) return trayApps.length
     var n = 0
@@ -313,11 +322,21 @@ Item {
     onHoveredChanged: {
       if (hovered) {
         closeTimer.stop()
-        root.hoverOpen = true
+        // A short pause, so sweeping across the handle toward the icons
+        // beside it doesn't pop the drawer. Already open stays open.
+        if (root.open) root.hoverOpen = true
+        else hoverIntent.restart()
       } else {
+        hoverIntent.stop()
         closeTimer.restart()
       }
     }
+  }
+
+  Timer {
+    id: hoverIntent
+    interval: 160
+    onTriggered: if (handleHover.hovered) root.hoverOpen = true
   }
 
   BarIconButton {
@@ -455,6 +474,17 @@ Item {
             dimmed: root.isHidden(root.appKey(modelData))
           }
         }
+      }
+
+      Text {
+        visible: !root.editing && root.shownTiles === 0 && root.shownApps === 0
+        width: parent.width
+        wrapMode: Text.WordWrap
+        text: "Nothing here yet. Edit brings hidden tiles back."
+        color: root.ink
+        opacity: 0.5
+        font.family: root.fontName
+        font.pixelSize: Style.font.caption
       }
 
       Text {

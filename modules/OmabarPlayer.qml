@@ -181,6 +181,7 @@ Item {
     property string icon: ""
     property real size: Style.font.icon
     property bool enabledAction: true
+    property real turn: 0
     signal clicked()
 
     implicitWidth: Math.round(root.barSize * 0.62)
@@ -192,6 +193,8 @@ Item {
       color: root.ink
       font.family: root.fontName
       font.pixelSize: glyph.size
+      rotation: glyph.turn
+      Behavior on rotation { NumberAnimation { duration: Style.duration(180); easing.type: Easing.OutCubic } }
       opacity: !glyph.enabledAction ? 0.3 : (tap.held ? 0.55 : (hover.hovered ? 1.0 : 0.78))
       scale: tap.held ? 0.88 : (hover.hovered ? 1.08 : 1.0)
       Behavior on scale { NumberAnimation { duration: Style.duration(160); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut } }
@@ -204,6 +207,8 @@ Item {
   component Disc: Item {
     id: disc
     property int size: Math.round(root.barSize * 0.72)
+    // True from the first cover that loads until there is no cover at all.
+    property bool hasCover: false
     implicitWidth: size
     implicitHeight: size
 
@@ -215,10 +220,21 @@ Item {
       sourceSize: Qt.size(root.coverPixels, root.coverPixels)
       fillMode: Image.PreserveAspectCrop
       asynchronous: true
+      // Keeps the last cover up while the next one loads, so a track change
+      // swaps covers instead of flashing the logo in between.
+      retainWhileLoading: true
       mipmap: true
       smooth: true
       visible: false
       layer.enabled: true; layer.smooth: true
+      onStatusChanged: {
+        if (status === Image.Ready) disc.hasCover = true
+        else if (status === Image.Error || status === Image.Null) disc.hasCover = false
+      }
+    }
+    Connections {
+      target: root
+      function onArtUrlChanged() { if (root.artUrl === "") disc.hasCover = false }
     }
     Rectangle {
       id: circleMask
@@ -235,7 +251,7 @@ Item {
       maskSource: circleMask
       maskThresholdMin: 0.5
       maskSpreadAtMin: 1.0
-      visible: cover.status === Image.Ready
+      visible: disc.hasCover
     }
     // Turns like a record while playing and rests where it stopped. A record
     // turns slowly (once in 24 seconds), so fifteen small steps a second look
@@ -254,7 +270,7 @@ Item {
       readonly property bool spotify: root.wanted === "spotify"
       anchors.fill: parent
       radius: width / 2
-      visible: cover.status !== Image.Ready
+      visible: !disc.hasCover
       color: spotify
         ? Qt.rgba(root.base.r * 0.5, root.base.g * 0.5, root.base.b * 0.5, 0.9)
         : Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, 0.35)
@@ -282,7 +298,7 @@ Item {
       radius: width / 2
       color: "transparent"
       border.width: 1
-      border.color: Qt.rgba(1, 1, 1, 0.18)
+      border.color: root.lightBase ? Qt.rgba(0, 0, 0, 0.12) : Qt.rgba(1, 1, 1, 0.18)
     }
 
     HoverHandler { id: discHover; cursorShape: Qt.PointingHandCursor }
@@ -441,7 +457,7 @@ Item {
                 }
               }
               Component.onCompleted: width = goal
-              NumberAnimation { id: jump; target: fill; property: "width"; duration: 260; easing.type: Easing.OutCubic }
+              NumberAnimation { id: jump; target: fill; property: "width"; duration: Style.duration(260); easing.type: Easing.OutCubic }
             }
           }
         }
@@ -470,7 +486,7 @@ Item {
       Text {
         visible: !root.active
         anchors.verticalCenter: parent.verticalCenter
-        text: "Spotify"
+        text: root.wanted === "spotify" ? "Spotify" : root.wanted.charAt(0).toUpperCase() + root.wanted.slice(1)
         color: root.ink
         opacity: restHover.hovered ? 1.0 : 0.6
         font.family: root.fontName
@@ -484,7 +500,8 @@ Item {
 
       Glyph {
         id: chevron
-        icon: root.menuOpen ? "\u{F0143}" : "\u{F0140}"
+        icon: "\u{F0140}"
+        turn: root.menuOpen ? 180 : 0
         size: Style.font.iconSmall
         onClicked: root.menuOpen = !root.menuOpen
       }

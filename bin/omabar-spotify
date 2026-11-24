@@ -218,10 +218,14 @@ def set_shuffle(on):
 
 
 def notify(text):
-    try:
-        subprocess.run(["notify-send", "-a", "Omabar", "Spotify", text], capture_output=True, timeout=5)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    """Omarchy's own notification style (with the Spotify glyph), else notify-send."""
+    for command in (["omarchy-notification-send", "-g", "\U000F04C7", "Spotify", text],
+                    ["notify-send", "-a", "Omabar", "Spotify", text]):
+        try:
+            if subprocess.run(command, capture_output=True, timeout=5).returncode == 0:
+                return
+        except (OSError, subprocess.TimeoutExpired):
+            continue
 
 
 def api_send(method, url, token, body=None):

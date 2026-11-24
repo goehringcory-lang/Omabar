@@ -1,5 +1,5 @@
 // Battery logic for OmabarBattery, kept free of QML so it can be tested with
-// node (tests/test_battery_model.js).
+// node (tests/test_battery_model.py).
 //
 // A battery here is a plain object:
 //   { name: "BAT1", percent: 0..100, energy: Wh, capacity: Wh,

@@ -1861,8 +1861,12 @@ Item {
         // Opaque, glassy and clear map to how much of the theme background
         // fills the glass; Hyprland blurs what is behind a glassy bar.
         property real fillAlpha: root.transparent ? 0.0 : (root.glassy ? 0.48 : 0.9)
-        readonly property color edge: root.omabarLightTheme ? Qt.rgba(0, 0, 0, 0.10) : Qt.rgba(1, 1, 1, 0.10)
+        // The rim, sheen, shadow and accent lip fade with the glass, so a
+        // clear bar is truly clear and switching styles never pops.
+        property real chrome: root.transparent ? 0.0 : 1.0
+        readonly property color edge: root.omabarLightTheme ? Qt.rgba(0, 0, 0, 0.10 * chrome) : Qt.rgba(1, 1, 1, 0.10 * chrome)
         Behavior on fillAlpha { NumberAnimation { duration: Style.duration(250); easing.type: Easing.OutCubic } }
+        Behavior on chrome { NumberAnimation { duration: Style.duration(250); easing.type: Easing.OutCubic } }
 
         RectangularShadow {
           anchors.fill: glass
@@ -1870,7 +1874,8 @@ Item {
           offset.y: Style.space(3)
           blur: Style.space(16)
           spread: -Style.space(2)
-          color: Qt.rgba(0, 0, 0, root.transparent ? 0.0 : (root.omabarLightTheme ? 0.14 : 0.32))
+          visible: omabarPill.chrome > 0
+          color: Qt.rgba(0, 0, 0, (root.omabarLightTheme ? 0.14 : 0.32) * omabarPill.chrome)
         }
 
         Rectangle {
@@ -1882,12 +1887,16 @@ Item {
           border.color: omabarPill.edge
         }
 
-        // A soft sheen across the top half, like light on curved glass.
+        // A soft sheen across the top half (the leading edge of a vertical
+        // bar), like light on curved glass.
         Rectangle {
           anchors.fill: parent
           anchors.margins: 1
           radius: Math.max(0, omabarPill.radius - 1)
+          visible: omabarPill.chrome > 0
+          opacity: omabarPill.chrome
           gradient: Gradient {
+            orientation: root.vertical ? Gradient.Horizontal : Gradient.Vertical
             GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, root.omabarLightTheme ? 0.45 : 0.09) }
             GradientStop { position: 0.48; color: Qt.rgba(1, 1, 1, root.omabarLightTheme ? 0.10 : 0.02) }
             GradientStop { position: 1.0; color: Qt.rgba(1, 1, 1, 0.0) }
@@ -1899,7 +1908,8 @@ Item {
           anchors.horizontalCenter: parent.horizontalCenter
           anchors.bottom: parent.bottom
           anchors.bottomMargin: 1
-          visible: !root.vertical && !root.transparent
+          visible: !root.vertical && omabarPill.chrome > 0
+          opacity: omabarPill.chrome
           width: parent.width * 0.42
           height: 1
           gradient: Gradient {

@@ -28,6 +28,8 @@ Item {
   property int unseen: 0
   property int unread: 0
   property var inboxes: []
+  // False once the counter finds no Thunderbird at all: the button then hides.
+  property bool installed: true
   readonly property bool hasNew: unseen > 0 || unread > 0
   readonly property string counter: String(Qt.resolvedUrl("../bin/omabar-mail-unread")).replace(/^file:\/\//, "")
 
@@ -45,6 +47,7 @@ Item {
           var before = root.unread
           root.unread = Math.max(0, Number(data.unread) || 0)
           root.inboxes = Array.isArray(data.inboxes) ? data.inboxes : []
+          root.installed = data.installed !== false
           var files = root.inboxes.map(function(inbox) { return String(inbox.file || "") })
             .filter(function(file) { return file !== "" })
           if (files.join("\n") !== root.inboxFiles.join("\n")) root.inboxFiles = files
@@ -89,12 +92,14 @@ Item {
   }
 
   function clear() {
+    pulse.stop()
+    glowOut.restart()
     if (root.unseen === 0) return
     root.unseen = 0
-    pulse.stop()
-    glow.opacity = 0
     remember()
   }
+  // Nothing is left to light up for (read here or elsewhere): let the glow go.
+  onHasNewChanged: if (!hasNew) { pulse.stop(); glowOut.restart() }
 
   // "imap.gmail.com 2, imap.gmail-1.com 1" when more than one inbox has mail.
   function breakdown() {
@@ -133,10 +138,17 @@ Item {
         }
       }
     }
-    // dbus-monitor shouldn't exit; if it does, try again shortly.
-    onExited: restart.start()
+    // dbus-monitor shouldn't exit; if it does, try again, backing off up to
+    // five minutes so a missing dbus-monitor doesn't respawn every few seconds.
+    onExited: {
+      restart.interval = Math.min(300000, restart.interval * 2)
+      restart.start()
+    }
+    onStarted: settle.restart()
   }
-  Timer { id: restart; interval: 5000; onTriggered: watcher.running = true }
+  Timer { id: restart; interval: 2500; onTriggered: watcher.running = true }
+  // Running for a minute counts as healthy again.
+  Timer { id: settle; interval: 60000; onTriggered: restart.interval = 2500 }
 
   // Looking at Thunderbird counts as reading the news, and leaving it is a
   // good moment to count what is still unread.
@@ -153,7 +165,8 @@ Item {
     }
   }
 
-  implicitWidth: button.implicitWidth
+  visible: installed
+  implicitWidth: installed ? button.implicitWidth : 0
   implicitHeight: button.implicitHeight
 
   BarIconButton {
@@ -189,6 +202,14 @@ Item {
       running: false
       NumberAnimation { to: 0.35; duration: Style.duration(260); easing.type: Easing.OutQuad }
       NumberAnimation { to: 0.12; duration: Style.duration(900); easing.type: Easing.InOutQuad }
+    }
+    NumberAnimation {
+      id: glowOut
+      target: glow
+      property: "opacity"
+      to: 0
+      duration: Style.duration(260)
+      easing.type: Easing.OutQuad
     }
   }
 }
