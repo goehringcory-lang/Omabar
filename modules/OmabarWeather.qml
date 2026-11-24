@@ -10,6 +10,7 @@
 //   days     - number of forecast days to show, 1..7 (default 5)
 //   units    - "F" or "C" (default "F")
 //   radarUrl - radar link to open (defaults to the location's weather.gov radar)
+//   twelveHour - "Updated" time as 9:30 AM (default true) or 09:30 (false)
 import QtQuick
 import Quickshell
 import Quickshell.Io
@@ -33,6 +34,8 @@ Item {
   readonly property real lat: Number(setting("lat", 37.67552934366611))
   readonly property real lon: Number(setting("lon", -119.78244423866272))
   readonly property int daysCount: Math.max(1, Math.min(7, Number(setting("days", 5)) || 5))
+  // "Updated 9:30 AM", or 09:30 with twelveHour set to false.
+  readonly property bool twelveHour: setting("twelveHour", true) !== false
   readonly property string units: String(setting("units", "F")).toUpperCase() === "C" ? "C" : "F"
   readonly property string defaultRadarUrl: "https://radar.weather.gov/station/khnx/standard"
   readonly property string configuredRadarUrl: String(setting("radarUrl", "")).trim()
@@ -86,7 +89,7 @@ Item {
     if (!iso) return ""
     var d = new Date(iso)
     if (isNaN(d.getTime())) return ""
-    return Qt.formatTime(d, "h:mm AP")
+    return Qt.formatTime(d, root.twelveHour ? "h:mm AP" : "HH:mm")
   }
 
   function load(force) {
@@ -171,7 +174,7 @@ Item {
   readonly property bool hasAlert: alerts && alerts.length > 0
 
   readonly property string tooltipText: {
-    if (!current) return error || "Weather\nClick for 5-day forecast"
+    if (!current) return error || "Weather\nClick for " + daysCount + "-day forecast"
     var lines = []
     var head = (location ? location + " · " : "") + barTemp + unit
     if (current.short) head += " " + current.short

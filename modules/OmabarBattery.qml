@@ -5,7 +5,9 @@
 // time left and the power profile.
 //
 // Settings (inline on the shell.json entry):
-//   external - sysfs name of the removable battery (default "BAT1")
+//   external - sysfs name of the removable battery (default "BAT1"). The
+//              external row only shows once that pack has been seen (or this
+//              is set), so a laptop with one battery never sees an empty slot.
 import QtQuick
 import Quickshell
 import Quickshell.Io
@@ -76,6 +78,24 @@ Item {
   readonly property var pair: Model.split(batteries, externalName)
   readonly property bool present: !!(pair.external || pair.internal)
   readonly property bool onBattery: UPower.onBattery
+  // A laptop that has never shown a second pack has no removable slot to
+  // report. Once one is seen it is remembered (a pulled pack still shows as
+  // "not inserted"), and setting `external` turns the slot on from the start.
+  property bool externalSeen: false
+  readonly property bool expectExternal: settings && settings.external !== undefined && settings.external !== null
+    || externalSeen || !!pair.external
+  readonly property string seenFile: (Quickshell.env("XDG_CACHE_HOME") || Quickshell.env("HOME") + "/.cache") + "/omabar/battery-external-seen"
+  FileView {
+    id: seenState
+    path: root.seenFile
+    printErrors: false
+    onLoaded: root.externalSeen = text().trim() === "1"
+  }
+  onPairChanged: if (pair.external && !externalSeen) { externalSeen = true; seenState.setText("1") }
+  // Low on battery: the icon turns the theme's urgent color.
+  readonly property bool low: onBattery && focusPercent >= 0 && focusPercent <= 15
+  readonly property color iconColor: low ? Commons.Color.urgent
+    : cardOpen || charging ? accent : ink
   readonly property string focusKey: Model.focus(pair, onBattery)
   readonly property var focusBattery: focusKey === "external" ? pair.external : pair.internal
   readonly property int focusPercent: Model.percentOf(focusBattery)
@@ -105,8 +125,8 @@ Item {
     if (!present) return ""
     var lines = []
     if (pair.external) lines.push("External " + Model.percentOf(pair.external) + "%" + (focusKey === "external" ? " (in use)" : ""))
-    else lines.push("External not inserted")
-    if (pair.internal) lines.push("Internal " + Model.percentOf(pair.internal) + "%" + (focusKey === "internal" && pair.external ? " (in use)" : ""))
+    else if (root.expectExternal) lines.push("External not inserted")
+    if (pair.internal) lines.push((root.expectExternal ? "Internal " : "Battery ") + Model.percentOf(pair.internal) + "%" + (focusKey === "internal" && pair.external ? " (in use)" : ""))
     if (pair.external && pair.internal) lines.push("Total " + totalPercent + "%")
     if (statusText) lines.push(statusText)
     return lines.join("\n")
@@ -191,7 +211,7 @@ Item {
       Text {
         anchors.verticalCenter: parent.verticalCenter
         text: root.barIcon
-        color: root.cardOpen || root.charging ? root.accent : root.ink
+        color: root.iconColor
         font.family: root.fontName
         font.pixelSize: Style.font.icon
         Behavior on color { ColorAnimation { duration: Style.duration(150) } }
@@ -217,9 +237,10 @@ Item {
       Text {
         anchors.horizontalCenter: parent.horizontalCenter
         text: root.barIcon
-        color: root.cardOpen || root.charging ? root.accent : root.ink
+        color: root.iconColor
         font.family: root.fontName
         font.pixelSize: Style.font.icon
+        Behavior on color { ColorAnimation { duration: Style.duration(150) } }
       }
 
       Text {
@@ -249,6 +270,7 @@ Item {
       ink: Commons.Color.popups.text
       fontName: root.fontName
       external: root.pair.external
+      showExternal: root.expectExternal
       internal: root.pair.internal
       focusKey: root.focusKey
       totalPercent: root.totalPercent

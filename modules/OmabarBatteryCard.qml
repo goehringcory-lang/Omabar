@@ -13,6 +13,7 @@ Item {
   property string fontName: "monospace"
 
   property var external: null
+  property bool showExternal: true
   property var internal: null
   property string focusKey: ""
   property int totalPercent: -1
@@ -97,6 +98,7 @@ Item {
 
     // ── one row per battery ──────────────────────────────────────────────
     BatteryRow {
+      visible: card.showExternal || card.external !== null
       label: "External"
       hint: "removable"
       battery: card.external
@@ -105,8 +107,8 @@ Item {
 
     BatteryRow {
       visible: card.internal !== null
-      label: card.external ? "Internal" : "Battery"
-      hint: card.external ? "built-in" : ""
+      label: card.external || card.showExternal ? "Internal" : "Battery"
+      hint: card.external || card.showExternal ? "built-in" : ""
       battery: card.internal
       inUse: card.focusKey === "internal"
     }
@@ -178,7 +180,8 @@ Item {
     property var battery: null
     property bool inUse: false
     readonly property int percent: Model.percentOf(battery)
-    readonly property color tone: inUse ? card.accent : card.ink
+    readonly property bool low: inUse && card.onBattery && percent >= 0 && percent <= 15
+    readonly property color tone: low ? Commons.Color.urgent : inUse ? card.accent : card.ink
 
     width: parent.width
     height: rowBody.implicitHeight + Style.space(20)
