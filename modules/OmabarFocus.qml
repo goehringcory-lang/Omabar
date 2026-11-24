@@ -40,11 +40,20 @@ Item {
   property bool cardOpen: false
   function close() { cardOpen = false }
   onActiveChanged: if (!active) cardOpen = false
+  // The controller counting this card as watching it: kept, so the count
+  // comes back down even if the bar is gone by the time this is destroyed.
+  property var watched: null
   onCardOpenChanged: {
-    if (focusMode) focusMode.watchers = Math.max(0, focusMode.watchers + (cardOpen ? 1 : -1))
+    if (cardOpen && focusMode && !watched) {
+      watched = focusMode
+      watched.watchers += 1
+    } else if (!cardOpen && watched) {
+      watched.watchers = Math.max(0, watched.watchers - 1)
+      watched = null
+    }
     syncTooltip()
   }
-  Component.onDestruction: if (cardOpen && focusMode) focusMode.watchers = Math.max(0, focusMode.watchers - 1)
+  Component.onDestruction: if (watched) watched.watchers = Math.max(0, watched.watchers - 1)
 
   readonly property string tooltipText: active
     ? Model.summary(info) + "\nClick for focus controls · Middle-click to end"

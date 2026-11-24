@@ -174,16 +174,23 @@ class CliTest(unittest.TestCase):
         self.log = os.path.join(self.tmp, "log")
         self.dnd_file = os.path.join(self.tmp, "dnd")
         self.playing_file = os.path.join(self.tmp, "playing")
+        self.other_file = os.path.join(self.tmp, "other-player")
         self.write("omarchy-shell", f"""#!/bin/sh
 echo "omarchy-shell $*" >> {self.log}
-case "$3" in
-  isDnd) cat {self.dnd_file} ;;
-  setDnd) echo "$4" > {self.dnd_file}; echo "$4" ;;
+# Like the real one, -q runs the call but prints nothing.
+quiet=0
+[ "$1" = "-q" ] && quiet=1 && shift
+case "$2" in
+  isDnd) out=$(cat {self.dnd_file}) ;;
+  setDnd) echo "$3" > {self.dnd_file}; out="$3" ;;
 esac
+[ $quiet = 1 ] || echo "$out"
 """)
         self.write("busctl", f"""#!/bin/sh
 echo "busctl $*" >> {self.log}
 case "$*" in
+  *" list"*) [ -f {self.other_file} ] && echo "org.mpris.MediaPlayer2.mpv 123 mpv user :1.9 - - -"; exit 0 ;;
+  *MediaPlayer2.mpv*PlaybackStatus*) echo 's "Playing"' ;;
   *PlaybackStatus*) [ -f {self.playing_file} ] && echo "s \\"$(cat {self.playing_file})\\"" || exit 1 ;;
 esac
 """)
@@ -266,6 +273,13 @@ esac
         self.run_cli("stop")
         self.assertEqual(self.dnd(), "on")
         self.assertNotIn("Pause", self.logged())
+        self.assertNotIn("spotify play", self.logged())
+
+    def test_other_player_playing_keeps_lofi_off(self):
+        self.set_dnd("off")
+        open(self.other_file, "w").close()
+        self.run_cli("start")
+        self.assertFalse(self.state()["ownsMusic"])
         self.assertNotIn("spotify play", self.logged())
 
     def test_dnd_turned_off_by_hand_stays_off(self):

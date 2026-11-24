@@ -15,16 +15,17 @@ import Quickshell.Io
 import "OmabarFocusModel.js" as Model
 
 Item {
-  id: focus
+  id: controller
 
   property var bar: null
 
   readonly property string helper: String(Qt.resolvedUrl("../bin/omabar-focus")).replace(/^file:\/\//, "")
   readonly property string stateFile: (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/omabar/focus.json"
 
-  property var state: ({})
+  // The state file as last read ("session", since Item already has a state).
+  property var session: ({})
   property double now: Date.now()
-  readonly property var info: Model.at(state, now)
+  readonly property var info: Model.at(session, now)
   readonly property bool active: info.active
   readonly property bool paused: info.paused
   // The bar folds every widget but the tile, workspaces, clock and timer.
@@ -41,7 +42,7 @@ Item {
   // A few seconds of "Break · 5 min" after a phase changes (the timer chip
   // shows it), and a pulse on the Omarchy tile.
   property string cue: ""
-  signal phaseChanged(string phase)
+  signal phaseBegan(string phase)
 
   function run(args) {
     Quickshell.execDetached([helper].concat(args))
@@ -53,48 +54,61 @@ Item {
   function resume() { run(["resume"]) }
   function skip() { run(["skip"]) }
 
-  function tick() { now = Date.now() }
+  function showCue(text, ms) {
+    cue = text
+    cueTimer.interval = ms || 4000
+    cueTimer.restart()
+  }
 
   FileView {
     id: store
-    path: focus.stateFile
+    path: controller.stateFile
     printErrors: false
     watchChanges: true
     blockLoading: true
     onFileChanged: reload()
-    onLoaded: focus.read(text())
-    onLoadFailed: focus.read("")
+    onLoaded: controller.read(text())
+    onLoadFailed: controller.read("")
   }
 
+  // `session` and `now` change together here, so the phase is checked once,
+  // after both, and never against the new clock with the old file (which,
+  // after a long sleep, would look like the whole set had run out).
+  property bool reading: false
   function read(text) {
     var next = {}
     try { next = JSON.parse(text || "{}") || {} } catch (e) { next = {} }
     if (typeof next !== "object" || Array.isArray(next)) next = {}
+    reading = true
+    session = next
     now = Date.now()
     lastTick = now
-    // A change of phase from a file change is one somebody asked for (Skip):
-    // it shows, but without the chime.
-    quiet = true
-    state = next
-    quiet = false
+    reading = false
     if (!ready) {
-      lastPhase = Model.at(next, now).cycleIndex
-      Qt.callLater(function() { focus.ready = true })
+      lastPhase = info.active ? info.cycleIndex : -1
+      Qt.callLater(function() { controller.ready = true })
+      return
     }
+    // A change of phase from the file is one somebody asked for (Skip): it
+    // shows, but without the chime.
+    checkPhase(true)
   }
 
   // A drop-down left open by a widget that is folding away would hang under
-  // nothing; close it.
+  // nothing; close it. The clock's calendar and the Focus card stay.
   onSlimChanged: {
     var open = slim && bar ? bar.activePopout : null
-    if (open && typeof open.close === "function") open.close()
+    if (!open || typeof open.close !== "function") return
+    var keeps = bar.omabarFocusKeeps || []
+    if (keeps.indexOf(String(open.moduleName || "")) === -1) open.close()
   }
 
   // ── phase changes ───────────────────────────────────────────────────
   property int lastPhase: -1
   property bool ending: false
-  property bool quiet: false
-  onInfoChanged: {
+  onInfoChanged: if (!reading && ready) checkPhase(false)
+
+  function checkPhase(quiet) {
     if (!info.active) {
       lastPhase = -1
       ending = false
@@ -104,7 +118,7 @@ Item {
       // The long break has run: end Focus mode, once.
       if (!ending) {
         ending = true
-        chime()
+        if (!quiet) chime()
         stop()
       }
       return
@@ -115,20 +129,19 @@ Item {
     }
     if (info.cycleIndex === lastPhase) return
     lastPhase = info.cycleIndex
-    cue = Model.phaseName(info) + " · " + Model.timeLeft(info.remainingMs)
-    cueTimer.restart()
+    showCue(Model.phaseName(info) + " · " + Model.timeLeft(info.remainingMs), 4000)
     if (!quiet) chime()
-    phaseChanged(info.phase)
+    phaseBegan(info.phase)
   }
 
   Timer {
     id: cueTimer
     interval: 4000
-    onTriggered: focus.cue = ""
+    onTriggered: controller.cue = ""
   }
 
   function chime() {
-    if (state.sound === false) return
+    if (session.sound === false) return
     Quickshell.execDetached(["sh", "-c",
       'for f in /usr/share/sounds/freedesktop/stereo/complete.oga /usr/share/sounds/freedesktop/stereo/bell.oga; do ' +
       '[ -f "$f" ] || continue; command -v pw-play >/dev/null && exec pw-play --volume 0.6 "$f"; ' +
@@ -147,23 +160,26 @@ Item {
 
   Timer {
     id: clock
-    running: focus.active
+    running: controller.active
     repeat: true
-    interval: focus.watchers > 0 && !focus.paused ? 1000 : Model.nextTick(focus.info, focus.ringLength, 1)
+    interval: controller.watchers > 0 && !controller.paused ? 1000 : Model.nextTick(controller.info, controller.ringLength, 1)
     onTriggered: {
       var t = Date.now()
-      if (!focus.paused && t - focus.lastTick > interval + focus.sleepGap) {
-        var asleepAt = focus.lastTick
-        focus.lastTick = t
-        focus.run(["pause", "--at", String(Math.round(asleepAt))])
+      if (!controller.paused && t - controller.lastTick > interval + controller.sleepGap) {
+        // `now` stays where it was until the paused file comes back, so
+        // nothing runs ahead in the meantime.
+        var asleepAt = controller.lastTick
+        controller.lastTick = t
+        controller.showCue("Paused while away", 15000)
+        controller.run(["pause", "--at", String(Math.round(asleepAt))])
         return
       }
-      if (focus.paused && focus.state.pausedAt && t - focus.state.pausedAt > focus.staleMs) {
-        focus.stop()
+      if (controller.paused && controller.session.pausedAt && t - controller.session.pausedAt > controller.staleMs) {
+        controller.stop()
         return
       }
-      focus.lastTick = t
-      focus.now = t
+      controller.lastTick = t
+      controller.now = t
     }
   }
 }

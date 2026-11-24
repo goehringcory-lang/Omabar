@@ -16,6 +16,8 @@ The player's chevron opens a playlist menu: one-click **Lofi Beats**, **Discover
 
 **Focus mode:** the **Focus** tile in the drawer (or `bin/omabar-focus toggle`, which you can bind to a key) turns on Do Not Disturb, starts Lofi Beats and folds the bar down to the Omarchy tile, the workspaces and the clock, with the time left beside it. A ring traces the Omarchy tile like a clock hand: it starts full and is eaten away as a 25 minute round runs down, then draws back in a quieter color through the 5 minute break. After four rounds and a 15 minute long break, Focus mode ends by itself and everything comes back. Click the time left for the Focus card (pause, skip, end); middle-click it to end Focus mode. A soft chime and a few seconds of "Break · 5 min" mark each change.
 
+![Focus mode](preview/focus-mode.png)
+
 ## Requirements
 
 - Omarchy 4 (the Quattro shell). Omabar replaces its bar; it doesn't work with Waybar on Omarchy 3.

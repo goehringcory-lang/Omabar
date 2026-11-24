@@ -164,27 +164,48 @@ def run(args, timeout=6):
         return None
 
 
-def dnd():
-    """True or False, or None when the shell can't be asked."""
-    result = run(["omarchy-shell", "-q", "notifications", "isDnd"])
+def shell_answer(*args):
+    """What the shell's notifications service answers ("on" or "off"), or
+    None when it can't be asked. Never with -q, which drops the answer."""
+    result = run(["omarchy-shell", "notifications", *args])
     if result is None or result.returncode != 0:
         return None
     answer = result.stdout.strip().strip('"').lower()
-    return answer == "on" if answer in ("on", "off") else None
+    return answer if answer in ("on", "off") else None
+
+
+def dnd():
+    """True or False, or None when the shell can't be asked."""
+    answer = shell_answer("isDnd")
+    return None if answer is None else answer == "on"
 
 
 def set_dnd(on):
-    result = run(["omarchy-shell", "-q", "notifications", "setDnd", "on" if on else "off"])
-    return result is not None and result.returncode == 0
+    return shell_answer("setDnd", "on" if on else "off") == ("on" if on else "off")
 
 
-def playback():
-    """"Playing", "Paused", "Stopped", or "" when Spotify isn't running."""
-    result = run(["busctl", "--user", "--timeout=3", "get-property", *MPRIS, "PlaybackStatus"])
+def status_of(name):
+    result = run(["busctl", "--user", "--timeout=3", "get-property", name, MPRIS[1], MPRIS[2], "PlaybackStatus"])
     if result is None or result.returncode != 0:
         return ""
     match = re.search(r'"(\w+)"', result.stdout)
     return match.group(1) if match else ""
+
+
+def playback():
+    """Spotify's "Playing", "Paused" or "Stopped", or "" when it isn't running."""
+    return status_of(MPRIS[0])
+
+
+def anything_playing():
+    """True when any media player (Spotify, a browser, mpv...) is playing."""
+    result = run(["busctl", "--user", "--timeout=3", "--no-legend", "list"])
+    names = []
+    if result is not None and result.returncode == 0:
+        names = sorted(set(re.findall(r"^(org\.mpris\.MediaPlayer2\.\S+)", result.stdout, re.M)))
+    if MPRIS[0] not in names:
+        names.append(MPRIS[0])
+    return any(status_of(name) == "Playing" for name in names)
 
 
 def pause_music():
@@ -214,7 +235,7 @@ def cmd_start():
     before = dnd()
     dnd_set = before is False and set_dnd(True)
     owns_music = False
-    if s.get("music") is not False and playback() != "Playing":
+    if s.get("music") is not False and not anything_playing():
         owns_music = start_lofi(str(s.get("lofi") or LOFI))
     write_json(STATE_FILE, {
         "active": True,

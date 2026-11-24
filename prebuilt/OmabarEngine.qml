@@ -3030,6 +3030,9 @@ Item {
     readonly property bool omabarFolded: root.omabarFoldsInFocus(slot)
     property real omabarFold: 1
     property real omabarFade: 1
+    // A slot made while Focus mode is already on (a monitor plugged in, the
+    // layout reloaded) starts folded rather than folding in front of you.
+    property bool omabarSettled: false
     states: State {
       name: "omabarFolded"
       when: slot.omabarFolded
@@ -3038,7 +3041,7 @@ Item {
     transitions: [
       Transition {
         to: "omabarFolded"
-        enabled: root.omabarFocus.ready
+        enabled: root.omabarFocus.ready && slot.omabarSettled
         SequentialAnimation {
           NumberAnimation { target: slot; property: "omabarFade"; duration: Style.duration(120); easing.type: Easing.OutCubic }
           NumberAnimation { target: slot; property: "omabarFold"; duration: Style.duration(320); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut }
@@ -3046,7 +3049,7 @@ Item {
       },
       Transition {
         from: "omabarFolded"
-        enabled: root.omabarFocus.ready
+        enabled: root.omabarFocus.ready && slot.omabarSettled
         SequentialAnimation {
           NumberAnimation { target: slot; property: "omabarFold"; duration: Style.duration(320); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut }
           NumberAnimation { target: slot; property: "omabarFade"; duration: Style.duration(180); easing.type: Easing.OutCubic }
@@ -3073,6 +3076,7 @@ Item {
     Component.onCompleted: {
       if (pool) pool.claim(slot)
       root.registerModuleSlot(slot)
+      Qt.callLater(function() { if (slot) slot.omabarSettled = true })
     }
     Component.onDestruction: {
       // Later, since a slot goes while its section's model is being changed,
@@ -3101,7 +3105,9 @@ Item {
         id: holder
         anchors.centerIn: parent
         opacity: slot.omabarFade
-        visible: slot.omabarFade > 0
+        // Still visible while its room closes: the slot's width is read from
+        // the widget only while it shows.
+        visible: slot.omabarFade > 0 || slot.omabarFold > 0
         width: slot.widgetWidth
         height: slot.widgetHeight
       }

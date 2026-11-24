@@ -68,10 +68,11 @@ Item {
   Connections {
     target: root.focusMode
     ignoreUnknownSignals: true
-    function onPhaseChanged(phase) { pulseAnimation.restart() }
+    function onPhaseBegan(phase) { pulseAnimation.restart() }
   }
 
-  implicitWidth: tile + Style.space(6)
+  // Room for the ring in Focus mode, so it doesn't touch the workspace dots.
+  implicitWidth: focusing ? Math.ceil(ringSize + ringStroke) + Style.space(6) : tile + Style.space(6)
   implicitHeight: barSize
 
   RectangularShadow {
