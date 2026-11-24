@@ -118,6 +118,7 @@ Item {
     bar: root.bar
     when: clock.date
     ink: root.ink
+    accent: root.accent
     south: root.southern
     twelveHour: root.twelveHour
     suppressTooltip: root.calendarOpen
