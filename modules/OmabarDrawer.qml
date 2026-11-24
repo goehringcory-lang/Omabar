@@ -119,6 +119,11 @@ Item {
     Quickshell.execDetached(["sh", "-c", 'mkdir -p "$(dirname "$1")" && printf "%s" "$2" > "$1.tmp" && mv -f "$1.tmp" "$1"', "sh", hiddenFile, JSON.stringify(next)])
   }
 
+  // ── Focus mode ──────────────────────────────────────────────────────
+  readonly property var focusMode: bar && bar.omabarFocus ? bar.omabarFocus : null
+  readonly property bool focusing: !!focusMode && focusMode.active
+  readonly property string focusLeft: focusing ? Math.max(1, Math.ceil(focusMode.info.remainingMs / 60000)) + "m" : ""
+
   // ── widget tiles ────────────────────────────────────────────────────
   readonly property var known: ({
     "omarchy.bluetooth": { icon: "\u{F00AF}", label: "Bluetooth" },
@@ -435,6 +440,23 @@ Item {
       Flow {
         width: parent.width
         spacing: root.tileGap
+
+        // Focus mode (bin/omabar-focus): Do Not Disturb, Lofi Beats, the bar
+        // slimmed to the tile, workspaces and clock, and a Pomodoro ring.
+        Tile {
+          readonly property string key: "omabar:focus"
+          visible: !!root.focusMode && (root.editing || !root.isHidden(key))
+          dimmed: root.isHidden(key)
+          on: root.focusing
+          icon: "\u{F08C9}"
+          label: root.focusing ? "Focus · " + root.focusLeft : "Focus"
+          onPicked: function(button) {
+            if (root.editing) { root.toggleHidden(key); return }
+            root.close()
+            root.focusMode.toggle()
+          }
+        }
+
         Repeater {
           model: root.trayEntries
           Tile {
@@ -573,12 +595,16 @@ Item {
     property string icon: ""
     property string label: ""
     property bool dimmed: false
+    // Lit in the accent color while what it starts is running.
+    property bool on: false
     signal picked(int button)
 
     width: root.tileWidth
     height: Style.space(62)
     radius: Style.space(14)
-    color: Qt.rgba(root.ink.r, root.ink.g, root.ink.b, tileHover.hovered ? 0.14 : 0.07)
+    color: on
+      ? Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, tileHover.hovered ? 0.30 : 0.22)
+      : Qt.rgba(root.ink.r, root.ink.g, root.ink.b, tileHover.hovered ? 0.14 : 0.07)
     opacity: dimmed ? 0.35 : 1
     scale: tileHover.pressed ? 0.96 : 1
     Behavior on color { ColorAnimation { duration: Style.duration(120) } }
@@ -591,7 +617,7 @@ Item {
       Text {
         anchors.horizontalCenter: parent.horizontalCenter
         text: tile.icon
-        color: tileHover.hovered ? Commons.Color.accent : root.ink
+        color: tileHover.hovered || tile.on ? Commons.Color.accent : root.ink
         font.family: root.fontName
         font.pixelSize: Style.font.iconLarge
         Behavior on color { ColorAnimation { duration: Style.duration(120) } }

@@ -46,9 +46,11 @@ usage() {
   sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
 }
 
-# Omabar's own settings, tokens and cache. --uninstall deletes both.
+# Omabar's own settings, tokens, cache and Focus mode state. --uninstall
+# deletes all three.
 OMABAR_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omabar"
 OMABAR_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omabar"
+OMABAR_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omabar"
 # The world clock's cities, as `omabar-setup --world-clock` saved them last.
 WORLD_CLOCK_FILE="$OMABAR_CONFIG_DIR/world-clock.json"
 # The id of the world clock clone setup made, so --uninstall removes only
@@ -359,9 +361,11 @@ if [[ ${1:-} == "--uninstall" ]]; then
   fi
 
   # 3. Everything else Omabar wrote: the update hook, its settings (Spotify
-  #    login, calendar addresses, world clock cities) and its cache.
+  #    login, calendar addresses, world clock cities), its cache and Focus
+  #    mode, ended first so Do Not Disturb goes back to how it was.
+  "$PLUGIN_DIR/bin/omabar-focus" stop >/dev/null 2>&1 || true
   rm -f "$HOOK_FILE"
-  rm -rf "$OMABAR_CONFIG_DIR" "$OMABAR_CACHE_DIR"
+  rm -rf "$OMABAR_CONFIG_DIR" "$OMABAR_CACHE_DIR" "$OMABAR_STATE_DIR"
   echo "Deleted Omabar's update hook, settings and cache"
 
   # 4. The plugin itself. exec, because this script lives inside it.
@@ -507,7 +511,9 @@ jq -S \
       center: [
         { id: "omabar-ask", type: "qml", source: ($dir + "/modules/OmabarAsk.qml") },
         { id: "omabar-player", type: "qml", source: ($dir + "/modules/OmabarPlayer.qml"), player: "spotify", maxWidth: 220 },
-        { id: "omabar-clock", type: "qml", source: ($dir + "/modules/OmabarClock.qml") }
+        { id: "omabar-clock", type: "qml", source: ($dir + "/modules/OmabarClock.qml") },
+        # The Focus mode timer: it takes no room unless Focus mode is on.
+        { id: "omabar-focus", type: "qml", source: ($dir + "/modules/OmabarFocus.qml") }
       ],
       centerEnd: (
         [ { id: $elsewhen } ]
